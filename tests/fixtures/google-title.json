@@ -1,0 +1,8 @@
+{
+  "name": "Google title check",
+  "baseUrl": "https://www.google.com",
+  "steps": [
+    { "action": "goto", "url": "/" },
+    { "action": "assert", "type": "title", "expected": "Google" }
+  ]
+}

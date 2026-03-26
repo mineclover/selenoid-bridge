@@ -1,0 +1,25 @@
+{
+  "name": "selenoid-bridge",
+  "version": "0.1.0",
+  "description": "Bridge between agent-browser and Selenoid for cross-browser test execution",
+  "type": "module",
+  "bin": {
+    "selenoid-bridge": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "commander": "^12.1.0",
+    "chrome-remote-interface": "^0.33.2"
+  },
+  "devDependencies": {
+    "@types/chrome-remote-interface": "^0.31.14",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0"
+  }
+}
