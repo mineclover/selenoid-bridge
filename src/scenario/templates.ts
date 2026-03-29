@@ -1,0 +1,195 @@
+import type { Scenario } from "./types.js";
+
+export type ScenarioTemplate = "blank" | "commerce-checkout";
+
+export function createScenarioTemplate(
+  name: string,
+  baseUrl: string,
+  template: ScenarioTemplate,
+): Scenario {
+  switch (template) {
+    case "commerce-checkout":
+      return createCommerceCheckoutTemplate(name, baseUrl);
+    case "blank":
+    default:
+      return createBlankTemplate(name, baseUrl);
+  }
+}
+
+function createBlankTemplate(name: string, baseUrl: string): Scenario {
+  return {
+    name,
+    baseUrl,
+    steps: [
+      {
+        id: "open-root",
+        phase: "탐색",
+        name: "첫 페이지를 연다",
+        action: "goto",
+        url: "/",
+        capture: "always",
+      },
+    ],
+    metadata: {
+      recordedAt: new Date().toISOString(),
+      recordedWith: "selenoid-bridge",
+      template: "blank",
+    },
+  };
+}
+
+function createCommerceCheckoutTemplate(name: string, baseUrl: string): Scenario {
+  return {
+    name,
+    baseUrl,
+    selectors: {
+      "auth.signup.form": { css: "[data-testid='auth.signup.form']", strategy: "data-testid" },
+      "auth.signup.submit": { css: "[data-testid='auth.signup.submit']", strategy: "data-testid" },
+      "home.main": { css: "[data-testid='home.main']", strategy: "data-testid" },
+      "catalog.product.first": { css: "[data-testid='catalog.product.first']", strategy: "data-testid" },
+      "product.detail.summary": { css: "[data-testid='product.detail.summary']", strategy: "data-testid" },
+      "product.detail.price": { css: "[data-testid='product.detail.price']", strategy: "data-testid" },
+      "purchase.buy-now": { css: "[data-testid='purchase.buy-now']", strategy: "data-testid" },
+      "checkout.summary": { css: "[data-testid='checkout.summary']", strategy: "data-testid" },
+      "checkout.submit": { css: "[data-testid='checkout.submit']", strategy: "data-testid" },
+      "checkout.result": { css: "[data-testid='checkout.result']", strategy: "data-testid" },
+    },
+    journey: {
+      actor: "guest-to-buyer",
+      goal: "회원 가입 후 상품을 선택하고 결제를 진행한다",
+      phases: [
+        "회원 가입",
+        "홈 이동",
+        "상품 선택",
+        "상품 상세 확인",
+        "구매 시작",
+        "결제",
+        "결제 진행 확인",
+      ],
+      tags: ["commerce", "signup", "checkout", "report"],
+    },
+    steps: [
+      {
+        id: "signup-page",
+        phase: "회원 가입",
+        name: "회원 가입 페이지로 이동한다",
+        action: "goto",
+        url: "/signup",
+        capture: "always",
+      },
+      {
+        id: "signup-form-visible",
+        phase: "회원 가입",
+        name: "회원 가입 폼이 보인다",
+        action: "assert",
+        type: "visible",
+        selectorKey: "auth.signup.form",
+        note: "서비스별 data-testid 규칙에 맞게 selectors.auth.signup.form 만 수정하세요.",
+        capture: "always",
+      },
+      {
+        id: "signup-submit",
+        phase: "회원 가입",
+        name: "회원 가입을 제출한다",
+        action: "click",
+        selectorKey: "auth.signup.submit",
+        note: "제출 버튼 selector는 selectors.auth.signup.submit 으로 관리합니다.",
+        capture: "always",
+      },
+      {
+        id: "home-after-signup",
+        phase: "홈 이동",
+        name: "회원 가입 후 홈으로 이동한다",
+        action: "assert",
+        type: "url",
+        expected: "/home",
+        capture: "always",
+      },
+      {
+        id: "home-main-visible",
+        phase: "홈 이동",
+        name: "홈 핵심 영역이 보인다",
+        action: "assert",
+        type: "visible",
+        selectorKey: "home.main",
+        note: "홈 대표 영역 selector는 selectors.home.main 으로 맞추세요.",
+        capture: "always",
+      },
+      {
+        id: "select-product",
+        phase: "상품 선택",
+        name: "첫 번째 상품을 선택한다",
+        action: "click",
+        selectorKey: "catalog.product.first",
+        note: "목록의 대표 상품 카드 selector를 매핑하세요.",
+        capture: "always",
+      },
+      {
+        id: "product-detail-visible",
+        phase: "상품 상세 확인",
+        name: "상품 상세 정보가 보인다",
+        action: "assert",
+        type: "visible",
+        selectorKey: "product.detail.summary",
+        capture: "always",
+      },
+      {
+        id: "product-price-visible",
+        phase: "상품 상세 확인",
+        name: "가격 정보가 보인다",
+        action: "assert",
+        type: "visible",
+        selectorKey: "product.detail.price",
+        capture: "always",
+      },
+      {
+        id: "start-purchase",
+        phase: "구매 시작",
+        name: "구매 버튼을 누른다",
+        action: "click",
+        selectorKey: "purchase.buy-now",
+        capture: "always",
+      },
+      {
+        id: "payment-page",
+        phase: "결제",
+        name: "결제 화면으로 이동한다",
+        action: "assert",
+        type: "url",
+        expected: "/checkout",
+        capture: "always",
+      },
+      {
+        id: "payment-summary-visible",
+        phase: "결제",
+        name: "결제 요약 영역이 보인다",
+        action: "assert",
+        type: "visible",
+        selectorKey: "checkout.summary",
+        capture: "always",
+      },
+      {
+        id: "payment-submit",
+        phase: "결제 진행 확인",
+        name: "결제를 진행한다",
+        action: "click",
+        selectorKey: "checkout.submit",
+        capture: "always",
+      },
+      {
+        id: "payment-result",
+        phase: "결제 진행 확인",
+        name: "결제 결과 화면이 보인다",
+        action: "assert",
+        type: "visible",
+        selectorKey: "checkout.result",
+        capture: "always",
+      },
+    ],
+    metadata: {
+      recordedAt: new Date().toISOString(),
+      recordedWith: "selenoid-bridge",
+      template: "commerce-checkout",
+    },
+  };
+}

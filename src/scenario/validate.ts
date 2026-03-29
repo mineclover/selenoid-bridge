@@ -16,6 +16,12 @@ export function validateScenario(data: unknown): Scenario {
   if (!Array.isArray(obj.steps) || obj.steps.length === 0) {
     throw new Error("Scenario must have at least one step");
   }
+  if (obj.selectors !== undefined) {
+    validateSelectors(obj.selectors);
+  }
+  if (obj.journey !== undefined) {
+    validateJourney(obj.journey);
+  }
 
   for (let i = 0; i < obj.steps.length; i++) {
     validateStep(obj.steps[i], i);
@@ -46,6 +52,68 @@ function validateStep(step: unknown, index: number): void {
     throw new Error(`Step ${index}: assert requires type`);
   }
   if (["click", "fill", "select", "check", "hover"].includes(s.action as string) && !s.selector) {
-    throw new Error(`Step ${index}: ${s.action} requires selector`);
+    if (typeof s.selectorKey !== "string" || !s.selectorKey) {
+      throw new Error(`Step ${index}: ${s.action} requires selector or selectorKey`);
+    }
+  }
+  if (s.name !== undefined && typeof s.name !== "string") {
+    throw new Error(`Step ${index}: name must be a string`);
+  }
+  if (s.phase !== undefined && typeof s.phase !== "string") {
+    throw new Error(`Step ${index}: phase must be a string`);
+  }
+  if (s.capture !== undefined && !["always", "failure", "off"].includes(s.capture as string)) {
+    throw new Error(`Step ${index}: capture must be one of always, failure, off`);
+  }
+  if (s.selectorKey !== undefined && typeof s.selectorKey !== "string") {
+    throw new Error(`Step ${index}: selectorKey must be a string`);
+  }
+  if (
+    s.action === "assert" &&
+    ["visible", "hidden", "text", "value"].includes(s.type as string) &&
+    !s.selector &&
+    (typeof s.selectorKey !== "string" || !s.selectorKey)
+  ) {
+    throw new Error(`Step ${index}: assert ${s.type} requires selector or selectorKey`);
+  }
+}
+
+function validateJourney(journey: unknown): void {
+  if (!journey || typeof journey !== "object") {
+    throw new Error("Scenario journey must be an object");
+  }
+
+  const value = journey as Record<string, unknown>;
+  if (value.actor !== undefined && typeof value.actor !== "string") {
+    throw new Error("Scenario journey actor must be a string");
+  }
+  if (value.goal !== undefined && typeof value.goal !== "string") {
+    throw new Error("Scenario journey goal must be a string");
+  }
+  if (value.phases !== undefined && (!Array.isArray(value.phases) || value.phases.some((phase) => typeof phase !== "string"))) {
+    throw new Error("Scenario journey phases must be an array of strings");
+  }
+  if (value.tags !== undefined && (!Array.isArray(value.tags) || value.tags.some((tag) => typeof tag !== "string"))) {
+    throw new Error("Scenario journey tags must be an array of strings");
+  }
+}
+
+function validateSelectors(selectors: unknown): void {
+  if (!selectors || typeof selectors !== "object" || Array.isArray(selectors)) {
+    throw new Error("Scenario selectors must be an object");
+  }
+
+  for (const [key, value] of Object.entries(selectors as Record<string, unknown>)) {
+    if (!value || typeof value !== "object") {
+      throw new Error(`Scenario selector "${key}" must be an object`);
+    }
+
+    const selector = value as Record<string, unknown>;
+    if (typeof selector.strategy !== "string") {
+      throw new Error(`Scenario selector "${key}" must include strategy`);
+    }
+    if (typeof selector.css !== "string") {
+      throw new Error(`Scenario selector "${key}" must include css`);
+    }
   }
 }

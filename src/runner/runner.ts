@@ -1,15 +1,31 @@
+import { mkdir, writeFile } from "node:fs/promises";
+import { join, relative } from "node:path";
 import { WebDriverClient } from "./webdriver.js";
-import type { Scenario, Step, BrowserTarget, RunResult, StepResult } from "../scenario/types.js";
+import type {
+  BrowserTarget,
+  CapturePreference,
+  RunArtifacts,
+  RunOptions,
+  RunResult,
+  Scenario,
+  Selector,
+  Step,
+  StepResult,
+} from "../scenario/types.js";
 
 export async function runScenario(
   selenoidUrl: string,
   scenario: Scenario,
   browser: BrowserTarget,
+  options: RunOptions = {},
 ): Promise<RunResult> {
   const client = new WebDriverClient(selenoidUrl);
   const stepResults: StepResult[] = [];
   const startTime = Date.now();
+  const startedAt = new Date(startTime).toISOString();
   let failed = false;
+
+  const browserArtifactsDir = await ensureBrowserArtifactsDir(options.artifactsDir, browser);
 
   try {
     await client.createSession(browser);
@@ -29,12 +45,13 @@ export async function runScenario(
       }
 
       try {
-        await executeStep(client, step, scenario.baseUrl);
+        await executeStep(client, step, scenario.baseUrl, scenario.selectors);
         stepResults.push({
           step,
           index: i,
           status: "passed",
           duration: Date.now() - stepStart,
+          artifacts: await collectArtifacts(client, options.artifactsDir, browserArtifactsDir, step, i, "passed", options.capture),
         });
       } catch (e: unknown) {
         failed = true;
@@ -44,13 +61,16 @@ export async function runScenario(
           status: "failed",
           duration: Date.now() - stepStart,
           error: e instanceof Error ? e.message : String(e),
+          artifacts: await collectArtifacts(client, options.artifactsDir, browserArtifactsDir, step, i, "failed", options.capture),
         });
       }
     }
   } finally {
     try {
       await client.deleteSession();
-    } catch { /* ignore cleanup errors */ }
+    } catch {
+      // ignore cleanup errors
+    }
   }
 
   return {
@@ -59,10 +79,18 @@ export async function runScenario(
     status: failed ? "failed" : "passed",
     steps: stepResults,
     duration: Date.now() - startTime,
+    startedAt,
+    finishedAt: new Date().toISOString(),
+    artifactsDir: browserArtifactsDir,
   };
 }
 
-async function executeStep(client: WebDriverClient, step: Step, baseUrl: string): Promise<void> {
+async function executeStep(
+  client: WebDriverClient,
+  step: Step,
+  baseUrl: string,
+  selectors: Scenario["selectors"],
+): Promise<void> {
   switch (step.action) {
     case "goto": {
       const url = step.url.startsWith("http") ? step.url : `${baseUrl}${step.url}`;
@@ -70,20 +98,20 @@ async function executeStep(client: WebDriverClient, step: Step, baseUrl: string)
       break;
     }
     case "click":
-      await client.click(step.selector);
+      await client.click(resolveSelectorForStep(step, selectors, "click"));
       break;
 
     case "fill":
-      await client.fill(step.selector, step.value);
+      await client.fill(resolveSelectorForStep(step, selectors, "fill"), step.value);
       break;
 
     case "select":
-      await client.select(step.selector, step.value);
+      await client.select(resolveSelectorForStep(step, selectors, "select"), step.value);
       break;
 
     case "check":
     case "hover":
-      await client.click(step.selector);
+      await client.click(resolveSelectorForStep(step, selectors, step.action));
       break;
 
     case "press":
@@ -93,13 +121,15 @@ async function executeStep(client: WebDriverClient, step: Step, baseUrl: string)
     case "wait":
       if (step.selector) {
         await waitForElement(client, step.selector, step.ms || 5000);
+      } else if (step.selectorKey) {
+        await waitForElement(client, resolveSelectorForStep(step, selectors, "wait"), step.ms || 5000);
       } else {
         await sleep(step.ms || 1000);
       }
       break;
 
     case "assert":
-      await executeAssert(client, step);
+      await executeAssert(client, step, selectors);
       break;
   }
 }
@@ -107,23 +137,25 @@ async function executeStep(client: WebDriverClient, step: Step, baseUrl: string)
 async function executeAssert(
   client: WebDriverClient,
   step: Extract<Step, { action: "assert" }>,
+  selectors: Scenario["selectors"],
 ): Promise<void> {
   switch (step.type) {
     case "visible": {
-      if (!step.selector) throw new Error("assert visible requires selector");
-      const visible = await client.isDisplayed(step.selector);
-      if (!visible) throw new Error(`Element not visible: ${step.selector.css || step.selector.xpath}`);
+      const selector = resolveSelectorForStep(step, selectors, "assert visible");
+      const visible = await client.isDisplayed(selector);
+      if (!visible) throw new Error(`Element not visible: ${selector.css || selector.xpath}`);
       break;
     }
     case "hidden": {
-      if (!step.selector) throw new Error("assert hidden requires selector");
-      const visible = await client.isDisplayed(step.selector);
-      if (visible) throw new Error(`Element should be hidden: ${step.selector.css || step.selector.xpath}`);
+      const selector = resolveSelectorForStep(step, selectors, "assert hidden");
+      const visible = await client.isDisplayed(selector);
+      if (visible) throw new Error(`Element should be hidden: ${selector.css || selector.xpath}`);
       break;
     }
     case "text": {
-      if (!step.selector || !step.expected) throw new Error("assert text requires selector and expected");
-      const text = await client.getText(step.selector);
+      if (!step.expected) throw new Error("assert text requires expected");
+      const selector = resolveSelectorForStep(step, selectors, "assert text");
+      const text = await client.getText(selector);
       if (!text.includes(step.expected)) {
         throw new Error(`Text mismatch: expected "${step.expected}", got "${text}"`);
       }
@@ -146,8 +178,9 @@ async function executeAssert(
       break;
     }
     case "value": {
-      if (!step.selector || !step.expected) throw new Error("assert value requires selector and expected");
-      const value = await client.getValue(step.selector);
+      if (!step.expected) throw new Error("assert value requires expected");
+      const selector = resolveSelectorForStep(step, selectors, "assert value");
+      const value = await client.getValue(selector);
       if (value !== step.expected) {
         throw new Error(`Value mismatch: expected "${step.expected}", got "${value}"`);
       }
@@ -156,14 +189,10 @@ async function executeAssert(
   }
 }
 
-async function waitForElement(
-  client: WebDriverClient,
-  selector: { css: string; xpath?: string; strategy: string },
-  timeoutMs: number,
-): Promise<void> {
+async function waitForElement(client: WebDriverClient, selector: Selector, timeoutMs: number): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (await client.isDisplayed(selector as import("../scenario/types.js").Selector)) return;
+    if (await client.isDisplayed(selector)) return;
     await sleep(200);
   }
   throw new Error(`Timeout waiting for element: ${selector.css || selector.xpath}`);
@@ -177,8 +206,102 @@ export async function runParallel(
   selenoidUrl: string,
   scenario: Scenario,
   browsers: BrowserTarget[],
+  options: RunOptions = {},
 ): Promise<RunResult[]> {
   return Promise.all(
-    browsers.map((browser) => runScenario(selenoidUrl, scenario, browser)),
+    browsers.map((browser) => runScenario(selenoidUrl, scenario, browser, options)),
   );
+}
+
+async function ensureBrowserArtifactsDir(
+  artifactsDir: string | undefined,
+  browser: BrowserTarget,
+): Promise<string | undefined> {
+  if (!artifactsDir) return undefined;
+  const dir = join(artifactsDir, slugify(`${browser.browserName}-${browser.browserVersion}`));
+  await mkdir(dir, { recursive: true });
+  return dir;
+}
+
+async function collectArtifacts(
+  client: WebDriverClient,
+  artifactsRootDir: string | undefined,
+  browserArtifactsDir: string | undefined,
+  step: Step,
+  index: number,
+  status: "passed" | "failed",
+  defaultCapture: RunOptions["capture"],
+): Promise<RunArtifacts | undefined> {
+  const artifacts: RunArtifacts = {};
+
+  const pageUrl = await safeRead(() => client.getUrl());
+  if (pageUrl) {
+    artifacts.pageUrl = pageUrl;
+  }
+
+  const pageTitle = await safeRead(() => client.getTitle());
+  if (pageTitle) {
+    artifacts.pageTitle = pageTitle;
+  }
+
+  if (artifactsRootDir && browserArtifactsDir && shouldCapture(step, status, defaultCapture)) {
+    const screenshot = await safeRead(() => client.takeScreenshot());
+    if (screenshot) {
+      const fileName = `${String(index + 1).padStart(2, "0")}-${slugify(step.id || step.name || step.action)}-${status}.png`;
+      const filePath = join(browserArtifactsDir, fileName);
+      await writeFile(filePath, screenshot);
+      artifacts.screenshotPath = relative(artifactsRootDir, filePath);
+    }
+  }
+
+  return Object.keys(artifacts).length > 0 ? artifacts : undefined;
+}
+
+function shouldCapture(step: Step, status: "passed" | "failed", defaultCapture: RunOptions["capture"]): boolean {
+  const preference = step.capture || normalizeCapture(defaultCapture);
+  if (preference === "off") return false;
+  if (preference === "always") return true;
+  return status === "failed";
+}
+
+function normalizeCapture(preference: RunOptions["capture"]): CapturePreference {
+  if (preference === "failure") return "failure";
+  if (preference === "off") return "off";
+  return "always";
+}
+
+async function safeRead<T>(fn: () => Promise<T>): Promise<T | undefined> {
+  try {
+    return await fn();
+  } catch {
+    return undefined;
+  }
+}
+
+function slugify(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 60) || "step";
+}
+
+function resolveSelectorForStep(
+  step: { selector?: Selector; selectorKey?: string },
+  selectors: Scenario["selectors"],
+  action: string,
+): Selector {
+  if (step.selector) {
+    return step.selector;
+  }
+
+  if (step.selectorKey && selectors?.[step.selectorKey]) {
+    return selectors[step.selectorKey];
+  }
+
+  if (step.selectorKey) {
+    throw new Error(`Missing selector mapping for "${step.selectorKey}" (${action})`);
+  }
+
+  throw new Error(`${action} requires selector or selectorKey`);
 }

@@ -125,6 +125,11 @@ export class WebDriverClient {
     return (await this.request("GET", `/wd/hub/session/${this.sessionId}/url`)) as string;
   }
 
+  async takeScreenshot(): Promise<Buffer> {
+    const base64 = (await this.request("GET", `/wd/hub/session/${this.sessionId}/screenshot`)) as string;
+    return Buffer.from(base64, "base64");
+  }
+
   async pressKey(key: string): Promise<void> {
     await this.request("POST", `/wd/hub/session/${this.sessionId}/actions`, {
       actions: [{
