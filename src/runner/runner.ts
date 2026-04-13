@@ -3,7 +3,6 @@ import { join, relative } from "node:path";
 import { WebDriverClient } from "./webdriver.js";
 import type {
   BrowserTarget,
-  CapturePreference,
   RunArtifacts,
   RunOptions,
   RunResult,
@@ -19,7 +18,9 @@ export async function runScenario(
   browser: BrowserTarget,
   options: RunOptions = {},
 ): Promise<RunResult> {
-  const client = new WebDriverClient(selenoidUrl);
+  const client = new WebDriverClient(selenoidUrl, {
+    requestTimeoutMs: options.requestTimeoutMs,
+  });
   const stepResults: StepResult[] = [];
   const startTime = Date.now();
   const startedAt = new Date(startTime).toISOString();
@@ -208,9 +209,35 @@ export async function runParallel(
   browsers: BrowserTarget[],
   options: RunOptions = {},
 ): Promise<RunResult[]> {
-  return Promise.all(
-    browsers.map((browser) => runScenario(selenoidUrl, scenario, browser, options)),
+  return runWithConcurrency(
+    browsers,
+    options.concurrency ?? browsers.length,
+    (browser) => runScenario(selenoidUrl, scenario, browser, options),
   );
+}
+
+export async function runWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  run: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  if (items.length === 0) return [];
+
+  const requested = Number.isFinite(concurrency) ? Math.floor(concurrency) : items.length;
+  const limit = Math.max(1, Math.min(items.length, requested));
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+
+  async function worker(): Promise<void> {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await run(items[index], index);
+    }
+  }
+
+  await Promise.all(Array.from({ length: limit }, () => worker()));
+  return results;
 }
 
 async function ensureBrowserArtifactsDir(
@@ -244,7 +271,7 @@ async function collectArtifacts(
     artifacts.pageTitle = pageTitle;
   }
 
-  if (artifactsRootDir && browserArtifactsDir && shouldCapture(step, status, defaultCapture)) {
+  if (artifactsRootDir && browserArtifactsDir && shouldCaptureStep(step, status, defaultCapture)) {
     const screenshot = await safeRead(() => client.takeScreenshot());
     if (screenshot) {
       const fileName = `${String(index + 1).padStart(2, "0")}-${slugify(step.id || step.name || step.action)}-${status}.png`;
@@ -257,17 +284,18 @@ async function collectArtifacts(
   return Object.keys(artifacts).length > 0 ? artifacts : undefined;
 }
 
-function shouldCapture(step: Step, status: "passed" | "failed", defaultCapture: RunOptions["capture"]): boolean {
-  const preference = step.capture || normalizeCapture(defaultCapture);
+export function shouldCaptureStep(
+  step: Step,
+  status: "passed" | "failed",
+  runCapture: RunOptions["capture"],
+): boolean {
+  if (runCapture === "all" || runCapture === "always") return true;
+  if (runCapture === "off") return false;
+
+  const preference = step.capture || "failure";
   if (preference === "off") return false;
   if (preference === "always") return true;
   return status === "failed";
-}
-
-function normalizeCapture(preference: RunOptions["capture"]): CapturePreference {
-  if (preference === "failure") return "failure";
-  if (preference === "off") return "off";
-  return "always";
 }
 
 async function safeRead<T>(fn: () => Promise<T>): Promise<T | undefined> {

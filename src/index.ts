@@ -3,10 +3,10 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { Command } from "commander";
+import { parseBrowserTargets, parseCaptureMode, parsePositiveInteger } from "./cli/options.js";
 import { printReport, toHtmlReport, toJsonReport } from "./runner/report.js";
 import { runParallel } from "./runner/runner.js";
 import { createScenarioTemplate, type ScenarioTemplate } from "./scenario/templates.js";
-import type { BrowserTarget } from "./scenario/types.js";
 import { validateScenario } from "./scenario/validate.js";
 
 const program = new Command();
@@ -21,29 +21,37 @@ program
   .description("Run a test scenario on Selenoid")
   .argument("<scenario>", "Path to scenario JSON file")
   .option("-s, --selenoid <url>", "Selenoid URL", "http://localhost:4444")
-  .option("-b, --browsers <list>", "Comma-separated browser:version list", "chrome:128.0")
+  .option("-b, --browsers <list>", "Comma-separated browser[:version] list", "chrome:128.0")
   .option("-o, --output <file>", "Write JSON report to file")
   .option("-a, --artifacts-dir <dir>", "Directory for screenshots and HTML/JSON reports")
-  .option("-c, --capture <mode>", "Capture mode: all, failure, off", "all")
+  .option("-c, --capture <mode>", "Capture mode: all, failure, off", "failure")
+  .option("--concurrency <count>", "Max parallel browser runs", "5")
+  .option("--request-timeout <ms>", "WebDriver request timeout in milliseconds", "30000")
   .action(async (scenarioPath: string, opts: {
     selenoid: string;
     browsers: string;
     output?: string;
     artifactsDir?: string;
     capture: string;
+    concurrency: string;
+    requestTimeout: string;
   }) => {
-    if (!["all", "failure", "off"].includes(opts.capture)) {
-      console.error(`Invalid capture mode: ${opts.capture}`);
+    let capture: "all" | "failure" | "off";
+    let concurrency: number;
+    let requestTimeoutMs: number;
+    let browsers: ReturnType<typeof parseBrowserTargets>;
+    try {
+      capture = parseCaptureMode(opts.capture);
+      concurrency = parsePositiveInteger(opts.concurrency, "concurrency");
+      requestTimeoutMs = parsePositiveInteger(opts.requestTimeout, "request-timeout");
+      browsers = parseBrowserTargets(opts.browsers);
+    } catch (e: unknown) {
+      console.error(e instanceof Error ? e.message : String(e));
       process.exit(1);
     }
 
     const raw = readFileSync(scenarioPath, "utf-8");
     const scenario = validateScenario(JSON.parse(raw));
-
-    const browsers: BrowserTarget[] = opts.browsers.split(",").map((entry) => {
-      const [browserName, browserVersion] = entry.split(":");
-      return { browserName, browserVersion: browserVersion || "latest" };
-    });
 
     const artifactsDir = resolve(
       opts.artifactsDir || join(process.cwd(), "artifacts", `${slugify(scenario.name)}-${timestampLabel()}`),
@@ -56,7 +64,9 @@ program
 
     const results = await runParallel(opts.selenoid, scenario, browsers, {
       artifactsDir,
-      capture: opts.capture as "all" | "failure" | "off",
+      capture,
+      concurrency,
+      requestTimeoutMs,
     });
 
     printReport(results);

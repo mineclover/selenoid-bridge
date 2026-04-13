@@ -27,7 +27,7 @@ function createBlankTemplate(name: string, baseUrl: string): Scenario {
         name: "첫 페이지를 연다",
         action: "goto",
         url: "/",
-        capture: "always",
+        capture: "failure",
       },
     ],
     metadata: {
@@ -75,7 +75,7 @@ function createCommerceCheckoutTemplate(name: string, baseUrl: string): Scenario
         name: "회원 가입 페이지로 이동한다",
         action: "goto",
         url: "/signup",
-        capture: "always",
+        capture: "failure",
       },
       {
         id: "signup-form-visible",
@@ -85,7 +85,7 @@ function createCommerceCheckoutTemplate(name: string, baseUrl: string): Scenario
         type: "visible",
         selectorKey: "auth.signup.form",
         note: "서비스별 data-testid 규칙에 맞게 selectors.auth.signup.form 만 수정하세요.",
-        capture: "always",
+        capture: "failure",
       },
       {
         id: "signup-submit",
@@ -94,7 +94,7 @@ function createCommerceCheckoutTemplate(name: string, baseUrl: string): Scenario
         action: "click",
         selectorKey: "auth.signup.submit",
         note: "제출 버튼 selector는 selectors.auth.signup.submit 으로 관리합니다.",
-        capture: "always",
+        capture: "failure",
       },
       {
         id: "home-after-signup",
@@ -103,7 +103,7 @@ function createCommerceCheckoutTemplate(name: string, baseUrl: string): Scenario
         action: "assert",
         type: "url",
         expected: "/home",
-        capture: "always",
+        capture: "failure",
       },
       {
         id: "home-main-visible",
@@ -113,7 +113,7 @@ function createCommerceCheckoutTemplate(name: string, baseUrl: string): Scenario
         type: "visible",
         selectorKey: "home.main",
         note: "홈 대표 영역 selector는 selectors.home.main 으로 맞추세요.",
-        capture: "always",
+        capture: "failure",
       },
       {
         id: "select-product",
@@ -122,7 +122,7 @@ function createCommerceCheckoutTemplate(name: string, baseUrl: string): Scenario
         action: "click",
         selectorKey: "catalog.product.first",
         note: "목록의 대표 상품 카드 selector를 매핑하세요.",
-        capture: "always",
+        capture: "failure",
       },
       {
         id: "product-detail-visible",
@@ -131,7 +131,7 @@ function createCommerceCheckoutTemplate(name: string, baseUrl: string): Scenario
         action: "assert",
         type: "visible",
         selectorKey: "product.detail.summary",
-        capture: "always",
+        capture: "failure",
       },
       {
         id: "product-price-visible",
@@ -140,7 +140,7 @@ function createCommerceCheckoutTemplate(name: string, baseUrl: string): Scenario
         action: "assert",
         type: "visible",
         selectorKey: "product.detail.price",
-        capture: "always",
+        capture: "failure",
       },
       {
         id: "start-purchase",
@@ -148,7 +148,7 @@ function createCommerceCheckoutTemplate(name: string, baseUrl: string): Scenario
         name: "구매 버튼을 누른다",
         action: "click",
         selectorKey: "purchase.buy-now",
-        capture: "always",
+        capture: "failure",
       },
       {
         id: "payment-page",
@@ -157,7 +157,7 @@ function createCommerceCheckoutTemplate(name: string, baseUrl: string): Scenario
         action: "assert",
         type: "url",
         expected: "/checkout",
-        capture: "always",
+        capture: "failure",
       },
       {
         id: "payment-summary-visible",
@@ -166,7 +166,7 @@ function createCommerceCheckoutTemplate(name: string, baseUrl: string): Scenario
         action: "assert",
         type: "visible",
         selectorKey: "checkout.summary",
-        capture: "always",
+        capture: "failure",
       },
       {
         id: "payment-submit",
@@ -174,7 +174,7 @@ function createCommerceCheckoutTemplate(name: string, baseUrl: string): Scenario
         name: "결제를 진행한다",
         action: "click",
         selectorKey: "checkout.submit",
-        capture: "always",
+        capture: "failure",
       },
       {
         id: "payment-result",
@@ -183,7 +183,7 @@ function createCommerceCheckoutTemplate(name: string, baseUrl: string): Scenario
         action: "assert",
         type: "visible",
         selectorKey: "checkout.result",
-        capture: "always",
+        capture: "failure",
       },
     ],
     metadata: {

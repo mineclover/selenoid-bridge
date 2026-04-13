@@ -134,4 +134,6 @@ export interface RunResult {
 export interface RunOptions {
   artifactsDir?: string;
   capture?: CapturePreference | "all";
+  concurrency?: number;
+  requestTimeoutMs?: number;
 }

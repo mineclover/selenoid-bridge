@@ -123,7 +123,7 @@ describe("createScenarioTemplate", () => {
 
     expect(scenario.journey?.phases).toContain("결제");
     expect(scenario.steps.some((step) => step.phase === "결제 진행 확인")).toBe(true);
-    expect(scenario.steps.every((step) => step.capture)).toBe(true);
+    expect(scenario.steps.every((step) => step.capture === "failure")).toBe(true);
     expect(scenario.selectors?.["checkout.submit"]?.css).toContain("checkout.submit");
     expect(scenario.steps.some((step) => step.selectorKey === "checkout.submit")).toBe(true);
   });

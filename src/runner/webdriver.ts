@@ -1,20 +1,42 @@
 import type { Selector, BrowserTarget } from "../scenario/types.js";
 
+export interface WebDriverClientOptions {
+  requestTimeoutMs?: number;
+}
+
 export class WebDriverClient {
   private baseUrl: string;
+  private requestTimeoutMs: number;
   private sessionId: string | null = null;
 
-  constructor(selenoidUrl: string) {
+  constructor(selenoidUrl: string, options: WebDriverClientOptions = {}) {
     this.baseUrl = selenoidUrl.replace(/\/$/, "");
+    this.requestTimeoutMs = options.requestTimeoutMs ?? 30000;
   }
 
   private async request(method: string, path: string, body?: unknown): Promise<unknown> {
     const url = `${this.baseUrl}${path}`;
-    const res = await fetch(url, {
-      method,
-      headers: body ? { "Content-Type": "application/json" } : {},
-      body: body ? JSON.stringify(body) : undefined,
-    });
+    const controller = this.requestTimeoutMs > 0 ? new AbortController() : undefined;
+    const timeout = controller
+      ? setTimeout(() => controller.abort(), this.requestTimeoutMs)
+      : undefined;
+
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method,
+        headers: body ? { "Content-Type": "application/json" } : {},
+        body: body ? JSON.stringify(body) : undefined,
+        signal: controller?.signal,
+      });
+    } catch (e: unknown) {
+      if (e instanceof Error && e.name === "AbortError") {
+        throw new Error(`WebDriver request timed out after ${this.requestTimeoutMs}ms: ${method} ${path}`);
+      }
+      throw e;
+    } finally {
+      if (timeout) clearTimeout(timeout);
+    }
 
     const data = await res.json() as { value: unknown };
 
@@ -28,12 +50,16 @@ export class WebDriverClient {
   }
 
   async createSession(browser: BrowserTarget): Promise<string> {
+    const alwaysMatch: Record<string, string> = {
+      browserName: browser.browserName,
+    };
+    if (browser.browserVersion) {
+      alwaysMatch.browserVersion = browser.browserVersion;
+    }
+
     const result = await this.request("POST", "/wd/hub/session", {
       capabilities: {
-        alwaysMatch: {
-          browserName: browser.browserName,
-          browserVersion: browser.browserVersion,
-        },
+        alwaysMatch,
       },
     }) as { sessionId: string };
 
