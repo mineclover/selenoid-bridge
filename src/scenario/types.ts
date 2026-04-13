@@ -46,7 +46,7 @@ export interface PressStep {
 export interface ScrollStep {
   action: "scroll";
   selector?: Selector;
-  direction: "up" | "down";
+  direction?: "up" | "down";
   amount?: number;
 }
 

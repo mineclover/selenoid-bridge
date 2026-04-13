@@ -67,6 +67,30 @@
 
 핵심은 step 에 raw selector를 반복하지 않고, `selectors` 에서 한 번만 정의하는 것입니다.
 
+## Supported Actions
+
+| Action | Required fields | Behavior |
+| --- | --- | --- |
+| `goto` | `url` | Opens an absolute URL or a path relative to `baseUrl`. |
+| `click` | `selector` or `selectorKey` | Finds the element and clicks it. |
+| `fill` | `selector` or `selectorKey`, `value` | Clears the target input and types the value. |
+| `select` | `selector` or `selectorKey`, `value` | Opens a select element and chooses `option[value='<value>']`. |
+| `check` | `selector` or `selectorKey` | Checks selected state first and only clicks when the element is not selected. |
+| `hover` | `selector` or `selectorKey` | Moves the mouse pointer to the element without clicking. |
+| `scroll` | `selector`/`selectorKey` or `direction` | Scrolls the element into view and/or scrolls the page `up` or `down`; optional `amount` defaults to 600px. |
+| `press` | `key` | Sends a keyboard key such as `Enter`, `Tab`, or `Escape`. |
+| `wait` | `ms`, `selector`, or `selectorKey` | Waits for a duration or for an element to become visible. |
+| `assert` | `type` plus required fields | Supports `visible`, `hidden`, `text`, `title`, `url`, and `value`. |
+
+Examples:
+
+```json
+{ "action": "hover", "selectorKey": "nav.account" }
+{ "action": "check", "selectorKey": "terms.accept" }
+{ "action": "scroll", "selectorKey": "section.pricing" }
+{ "action": "scroll", "direction": "down", "amount": 800 }
+```
+
 ## Templates
 
 빈 템플릿:

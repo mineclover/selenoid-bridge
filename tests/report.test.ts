@@ -62,4 +62,39 @@ describe("report generation", () => {
     expect(json.summary.totalRuns).toBe(1);
     expect(json.summary.passedRuns).toBe(1);
   });
+
+  it("escapes html in user-provided report fields", () => {
+    const results: RunResult[] = [
+      {
+        browser: { browserName: "chrome", browserVersion: "128.0" },
+        scenario: "<script>alert(1)</script>",
+        status: "failed",
+        duration: 100,
+        startedAt: "2026-03-27T00:00:00.000Z",
+        finishedAt: "2026-03-27T00:00:00.100Z",
+        steps: [
+          {
+            index: 0,
+            status: "failed",
+            duration: 10,
+            error: "<img src=x onerror=alert(1)>",
+            step: {
+              action: "assert",
+              type: "title",
+              expected: "<Home>",
+              name: "<b>Title check</b>",
+            },
+          },
+        ],
+      },
+    ];
+
+    const html = toHtmlReport(results);
+
+    expect(html).not.toContain("<script>alert(1)</script>");
+    expect(html).not.toContain("<img src=x onerror=alert(1)>");
+    expect(html).not.toContain("<b>Title check</b>");
+    expect(html).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
+    expect(html).toContain("&lt;img src=x onerror=alert(1)&gt;");
+  });
 });

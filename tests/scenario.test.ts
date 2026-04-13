@@ -115,6 +115,50 @@ describe("validateScenario", () => {
       }),
     ).toThrow("capture must be one of always, failure, off");
   });
+
+  it("accepts scroll to selector and directional scroll", () => {
+    const scenario = validateScenario({
+      name: "Scroll test",
+      baseUrl: "https://x.com",
+      steps: [
+        { action: "scroll", selectorKey: "section.pricing" },
+        { action: "scroll", direction: "down", amount: 800 },
+      ],
+      selectors: {
+        "section.pricing": { css: "[data-testid='section.pricing']", strategy: "data-testid" },
+      },
+    });
+
+    expect(scenario.steps).toHaveLength(2);
+  });
+
+  it("rejects scroll without target or direction", () => {
+    expect(() =>
+      validateScenario({
+        name: "Test",
+        baseUrl: "https://x.com",
+        steps: [{ action: "scroll" }],
+      }),
+    ).toThrow("scroll requires selector");
+  });
+
+  it("rejects invalid scroll direction and amount", () => {
+    expect(() =>
+      validateScenario({
+        name: "Test",
+        baseUrl: "https://x.com",
+        steps: [{ action: "scroll", direction: "sideways" }],
+      }),
+    ).toThrow("scroll direction must be up or down");
+
+    expect(() =>
+      validateScenario({
+        name: "Test",
+        baseUrl: "https://x.com",
+        steps: [{ action: "scroll", direction: "down", amount: 0 }],
+      }),
+    ).toThrow("scroll amount must be a positive number");
+  });
 });
 
 describe("createScenarioTemplate", () => {

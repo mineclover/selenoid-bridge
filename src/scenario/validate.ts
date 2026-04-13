@@ -51,6 +51,18 @@ function validateStep(step: unknown, index: number): void {
   if (s.action === "assert" && !s.type) {
     throw new Error(`Step ${index}: assert requires type`);
   }
+  if (s.action === "scroll") {
+    const hasSelector = Boolean(s.selector) || (typeof s.selectorKey === "string" && Boolean(s.selectorKey));
+    if (!hasSelector && typeof s.direction !== "string") {
+      throw new Error(`Step ${index}: scroll requires selector, selectorKey, or direction`);
+    }
+    if (s.direction !== undefined && !["up", "down"].includes(s.direction as string)) {
+      throw new Error(`Step ${index}: scroll direction must be up or down`);
+    }
+    if (s.amount !== undefined && (typeof s.amount !== "number" || s.amount <= 0)) {
+      throw new Error(`Step ${index}: scroll amount must be a positive number`);
+    }
+  }
   if (["click", "fill", "select", "check", "hover"].includes(s.action as string) && !s.selector) {
     if (typeof s.selectorKey !== "string" || !s.selectorKey) {
       throw new Error(`Step ${index}: ${s.action} requires selector or selectorKey`);

@@ -29,6 +29,10 @@ describe("parseBrowserTargets", () => {
   it("rejects malformed browser entries", () => {
     expect(() => parseBrowserTargets("chrome:128.0:extra")).toThrow("Invalid browser entry");
   });
+
+  it("rejects missing browser names", () => {
+    expect(() => parseBrowserTargets(":128.0")).toThrow("Invalid browser entry");
+  });
 });
 
 describe("parseCaptureMode", () => {

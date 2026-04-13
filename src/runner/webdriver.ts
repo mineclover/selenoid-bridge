@@ -4,10 +4,22 @@ export interface WebDriverClientOptions {
   requestTimeoutMs?: number;
 }
 
+export class WebDriverError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly errorCode?: string,
+  ) {
+    super(message);
+    this.name = "WebDriverError";
+  }
+}
+
 export class WebDriverClient {
   private baseUrl: string;
   private requestTimeoutMs: number;
   private sessionId: string | null = null;
+  private readonly w3cElementKey = "element-6066-11e4-a52e-4f735466cecf";
 
   constructor(selenoidUrl: string, options: WebDriverClientOptions = {}) {
     this.baseUrl = selenoidUrl.replace(/\/$/, "");
@@ -43,7 +55,8 @@ export class WebDriverClient {
     if (res.status >= 400) {
       const errorValue = data.value as Record<string, unknown> | undefined;
       const msg = errorValue?.message || errorValue?.error || JSON.stringify(data);
-      throw new Error(`WebDriver error: ${msg}`);
+      const errorCode = typeof errorValue?.error === "string" ? errorValue.error : undefined;
+      throw new WebDriverError(`WebDriver error: ${msg}`, res.status, errorCode);
     }
 
     return data.value;
@@ -105,6 +118,33 @@ export class WebDriverClient {
     await this.request("POST", `/wd/hub/session/${this.sessionId}/element/${elementId}/click`);
   }
 
+  async hover(selector: Selector): Promise<void> {
+    const elementId = await this.findElement(selector);
+    await this.request("POST", `/wd/hub/session/${this.sessionId}/actions`, {
+      actions: [{
+        type: "pointer",
+        id: "mouse",
+        parameters: { pointerType: "mouse" },
+        actions: [
+          {
+            type: "pointerMove",
+            duration: 100,
+            origin: this.elementReference(elementId),
+            x: 0,
+            y: 0,
+          },
+        ],
+      }],
+    });
+  }
+
+  async check(selector: Selector): Promise<void> {
+    const elementId = await this.findElement(selector);
+    if (await this.isSelectedElement(elementId)) return;
+
+    await this.request("POST", `/wd/hub/session/${this.sessionId}/element/${elementId}/click`);
+  }
+
   async fill(selector: Selector, text: string): Promise<void> {
     const elementId = await this.findElement(selector);
     // Clear existing value
@@ -119,7 +159,7 @@ export class WebDriverClient {
     // Click the select element, then find and click the option
     const elementId = await this.findElement(selector);
     await this.request("POST", `/wd/hub/session/${this.sessionId}/element/${elementId}/click`);
-    const optionId = await this.findElement({ css: `option[value='${value}']`, strategy: "css-path" });
+    const optionId = await this.findElement({ css: `option[value=${quoteCssAttributeValue(value)}]`, strategy: "css-path" });
     await this.request("POST", `/wd/hub/session/${this.sessionId}/element/${optionId}/click`);
   }
 
@@ -128,9 +168,17 @@ export class WebDriverClient {
       const elementId = await this.findElement(selector);
       const result = await this.request("GET", `/wd/hub/session/${this.sessionId}/element/${elementId}/displayed`);
       return result === true;
-    } catch {
-      return false;
+    } catch (e: unknown) {
+      if (e instanceof WebDriverError && (e.errorCode === "no such element" || e.message.includes("no such element"))) {
+        return false;
+      }
+      throw e;
     }
+  }
+
+  private async isSelectedElement(elementId: string): Promise<boolean> {
+    const result = await this.request("GET", `/wd/hub/session/${this.sessionId}/element/${elementId}/selected`);
+    return result === true;
   }
 
   async getText(selector: Selector): Promise<string> {
@@ -156,6 +204,19 @@ export class WebDriverClient {
     return Buffer.from(base64, "base64");
   }
 
+  async scrollTo(selector: Selector): Promise<void> {
+    const elementId = await this.findElement(selector);
+    await this.executeScript(
+      "arguments[0].scrollIntoView({ block: 'center', inline: 'center' });",
+      [this.elementReference(elementId)],
+    );
+  }
+
+  async scrollBy(direction: "up" | "down", amount = 600): Promise<void> {
+    const deltaY = direction === "up" ? -Math.abs(amount) : Math.abs(amount);
+    await this.executeScript("window.scrollBy(0, arguments[0]);", [deltaY]);
+  }
+
   async pressKey(key: string): Promise<void> {
     await this.request("POST", `/wd/hub/session/${this.sessionId}/actions`, {
       actions: [{
@@ -167,6 +228,17 @@ export class WebDriverClient {
         ],
       }],
     });
+  }
+
+  private async executeScript(script: string, args: unknown[] = []): Promise<unknown> {
+    return this.request("POST", `/wd/hub/session/${this.sessionId}/execute/sync`, {
+      script,
+      args,
+    });
+  }
+
+  private elementReference(elementId: string): Record<string, string> {
+    return { [this.w3cElementKey]: elementId };
   }
 }
 
@@ -183,4 +255,8 @@ function mapKey(key: string): string {
     ArrowRight: "\uE014",
   };
   return keyMap[key] || key;
+}
+
+function quoteCssAttributeValue(value: string): string {
+  return `"${value.replace(/\\/g, "\\\\").replace(/"/g, "\\\"")}"`;
 }

@@ -111,8 +111,20 @@ async function executeStep(
       break;
 
     case "check":
+      await client.check(resolveSelectorForStep(step, selectors, "check"));
+      break;
+
     case "hover":
-      await client.click(resolveSelectorForStep(step, selectors, step.action));
+      await client.hover(resolveSelectorForStep(step, selectors, "hover"));
+      break;
+
+    case "scroll":
+      if (step.selector || step.selectorKey) {
+        await client.scrollTo(resolveSelectorForStep(step, selectors, "scroll"));
+      }
+      if (step.direction) {
+        await client.scrollBy(step.direction, step.amount);
+      }
       break;
 
     case "press":
