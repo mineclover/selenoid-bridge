@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, resolve, basename } from "node:path";
 import { Command } from "commander";
 import { parseBrowserTargets, parseCaptureMode, parsePositiveInteger } from "./cli/options.js";
 import { printReport, toHtmlReport, toJsonReport } from "./runner/report.js";
@@ -126,6 +126,84 @@ program
     writeFileSync(outFile, json);
     console.log(`Scenario template created: ${outFile}`);
     console.log(`Template: ${opts.template}`);
+  });
+
+program
+  .command("render")
+  .description("Render an HTML composition to video via the hyperframes renderer")
+  .argument("<source>", "Path to HTML file or http(s):// URL with window.__hf")
+  .option("-r, --renderer <url>", "Hyperframes renderer URL", "http://localhost:9847")
+  .option("-o, --output <file>", "Output video path")
+  .option("--fps <n>", "Frames per second", "30")
+  .option("--quality <q>", "Quality: draft, standard, high", "standard")
+  .option("--format <f>", "Output format: mp4, webm, mov", "mp4")
+  .action(async (source: string, opts: {
+    renderer: string;
+    output?: string;
+    fps: string;
+    quality: string;
+    format: string;
+  }) => {
+    const rendererUrl = opts.renderer.replace(/\/$/, "");
+
+    // Health check
+    try {
+      const health = await fetch(`${rendererUrl}/health`);
+      if (!health.ok) throw new Error(`status ${health.status}`);
+    } catch (e) {
+      console.error(`Renderer not reachable at ${rendererUrl}: ${e instanceof Error ? e.message : e}`);
+      process.exit(1);
+    }
+
+    // Resolve source to html string or previewUrl
+    let body: Record<string, unknown>;
+    if (source.startsWith("http://") || source.startsWith("https://")) {
+      body = { previewUrl: source };
+    } else {
+      const htmlPath = resolve(source);
+      body = { html: readFileSync(htmlPath, "utf-8") };
+    }
+
+    body = { ...body, fps: parseInt(opts.fps, 10), quality: opts.quality, format: opts.format };
+
+    console.log(`Rendering via ${rendererUrl} (fps=${opts.fps}, quality=${opts.quality})...`);
+
+    const res = await fetch(`${rendererUrl}/render`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(30 * 60 * 1000), // 30 min max
+    });
+
+    const result = await res.json() as {
+      success: boolean;
+      error?: string;
+      outputToken?: string;
+      outputUrl?: string;
+      durationMs?: number;
+      fileSize?: number;
+    };
+
+    if (!result.success || !result.outputToken) {
+      console.error(`Render failed: ${result.error ?? "unknown error"}`);
+      process.exit(1);
+    }
+
+    // Download video
+    const downloadUrl = `${rendererUrl}/outputs/${result.outputToken}`;
+    const videoRes = await fetch(downloadUrl);
+    if (!videoRes.ok) {
+      console.error(`Download failed: ${videoRes.status}`);
+      process.exit(1);
+    }
+
+    const srcName = source.startsWith("http") ? "output" : basename(source, ".html");
+    const outPath = resolve(opts.output ?? `${srcName}.${opts.format}`);
+    writeFileSync(outPath, Buffer.from(await videoRes.arrayBuffer()));
+
+    const secs = ((result.durationMs ?? 0) / 1000).toFixed(1);
+    const kb = Math.round((result.fileSize ?? 0) / 1024);
+    console.log(`Saved: ${outPath} (${kb}KB, rendered in ${secs}s)`);
   });
 
 program.parse();
