@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join, resolve, basename } from "node:path";
+import { mkdirSync, readFileSync, writeFileSync, readdirSync, statSync } from "node:fs";
+import { join, resolve, basename, extname, dirname } from "node:path";
 import { Command } from "commander";
 import { parseBrowserTargets, parseCaptureMode, parsePositiveInteger } from "./cli/options.js";
 import { printReport, toHtmlReport, toJsonReport } from "./runner/report.js";
@@ -137,12 +137,14 @@ program
   .option("--fps <n>", "Frames per second", "30")
   .option("--quality <q>", "Quality: draft, standard, high", "standard")
   .option("--format <f>", "Output format: mp4, webm, mov", "mp4")
+  .option("--files <dir>", "Directory of asset files to serve alongside the HTML (images, CSS, etc.)")
   .action(async (source: string, opts: {
     renderer: string;
     output?: string;
     fps: string;
     quality: string;
     format: string;
+    files?: string;
   }) => {
     const rendererUrl = opts.renderer.replace(/\/$/, "");
 
@@ -162,6 +164,14 @@ program
     } else {
       const htmlPath = resolve(source);
       body = { html: readFileSync(htmlPath, "utf-8") };
+      // Auto-include sibling files in the same directory as the HTML
+      // (unless --files points elsewhere)
+      const assetsDir = resolve(opts.files ?? dirname(htmlPath));
+      const files = collectFiles(assetsDir, htmlPath);
+      if (Object.keys(files).length > 0) {
+        body.files = files;
+        console.log(`Assets: ${Object.keys(files).join(", ")}`);
+      }
     }
 
     body = { ...body, fps: parseInt(opts.fps, 10), quality: opts.quality, format: opts.format };
@@ -207,6 +217,24 @@ program
   });
 
 program.parse();
+
+const ASSET_EXTS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".css", ".js", ".json", ".woff", ".woff2"]);
+
+function collectFiles(dir: string, excludeHtml: string): Record<string, string> {
+  const files: Record<string, string> = {};
+  try {
+    for (const name of readdirSync(dir)) {
+      const fullPath = join(dir, name);
+      if (fullPath === excludeHtml) continue;
+      if (statSync(fullPath).isFile() && ASSET_EXTS.has(extname(name).toLowerCase())) {
+        files[name] = readFileSync(fullPath).toString("base64");
+      }
+    }
+  } catch {
+    // dir not readable — skip
+  }
+  return files;
+}
 
 function slugify(value: string): string {
   return value
