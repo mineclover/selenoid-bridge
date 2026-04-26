@@ -233,9 +233,15 @@ program
 
 program.parse();
 
-const ASSET_EXTS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".css", ".js", ".woff", ".woff2"]);
+const ASSET_EXTS  = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".css", ".js", ".woff", ".woff2"]);
+const IMAGE_EXTS  = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp"]);
+const SEQ_PATTERN = /^(.+?)_?(\d{2,})\.(png|jpe?g|gif|webp)$/i;
 
-interface FileMeta { frameWidth?: number; frameHeight?: number }
+// B: size limits (matching server)
+const FILE_WARN_BYTES  = 10 * 1024 * 1024;  // warn at 10MB
+const FILE_LIMIT_BYTES = 20 * 1024 * 1024;  // hard limit 20MB
+
+interface FileMeta { frameWidth?: number; frameHeight?: number; rows?: number; renderMode?: string }
 
 function collectAssets(dir: string, excludeHtml: string): {
   files: Record<string, string>;
@@ -243,27 +249,58 @@ function collectAssets(dir: string, excludeHtml: string): {
 } {
   const files: Record<string, string> = {};
   const meta: Record<string, FileMeta> = {};
+  const seqCandidates = new Map<string, string[]>(); // key → [name, ...]
+
   try {
-    for (const name of readdirSync(dir)) {
+    const names = readdirSync(dir).sort();
+    for (const name of names) {
       const fullPath = join(dir, name);
       if (!statSync(fullPath).isFile()) continue;
       const ext = extname(name).toLowerCase();
 
-      // Asset file
+      // Asset file — B: size check
       if (ASSET_EXTS.has(ext) && fullPath !== excludeHtml) {
+        const size = statSync(fullPath).size;
+        if (size > FILE_LIMIT_BYTES) {
+          console.warn(`  SKIP "${name}" (${Math.round(size/1024/1024)}MB > 20MB limit) — split into grid or sequence`);
+          continue;
+        }
+        if (size > FILE_WARN_BYTES) {
+          console.warn(`  WARN "${name}" is ${Math.round(size/1024/1024)}MB — consider splitting`);
+        }
         files[name] = readFileSync(fullPath).toString("base64");
+
+        // C: collect sequence candidates
+        if (IMAGE_EXTS.has(ext)) {
+          const m = name.match(SEQ_PATTERN);
+          if (m) {
+            const seqKey = `${m[1]}.${m[3].toLowerCase()}`;
+            if (!seqCandidates.has(seqKey)) seqCandidates.set(seqKey, []);
+            seqCandidates.get(seqKey)!.push(name);
+          }
+        }
       }
 
-      // Sidecar: sprite.png.meta.json  →  meta for sprite.png
+      // Sidecar: sprite.png.meta.json → meta for sprite.png
       if (name.endsWith(".meta.json")) {
         const assetName = name.replace(/\.meta\.json$/, "");
         try {
           const data = JSON.parse(readFileSync(fullPath, "utf-8")) as FileMeta;
-          if (data.frameWidth || data.frameHeight) meta[assetName] = data;
+          if (data.frameWidth || data.frameHeight || data.rows) meta[assetName] = data;
         } catch { /* skip malformed */ }
       }
     }
   } catch { /* dir not readable */ }
+
+  // C: emit sequence meta for groups with ≥2 frames
+  for (const [seqKey, frameNames] of seqCandidates) {
+    if (frameNames.length < 2) continue;
+    // Sequence meta inherits any existing sidecar meta
+    if (!meta[seqKey]) meta[seqKey] = {};
+    // Log detection
+    console.log(`  Sequence "${seqKey}" → ${frameNames.length} frames`);
+  }
+
   return { files, meta };
 }
 
