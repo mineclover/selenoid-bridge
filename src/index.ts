@@ -2,6 +2,7 @@
 
 import { mkdirSync, readFileSync, writeFileSync, readdirSync, statSync } from "node:fs";
 import { join, resolve, basename, extname, dirname } from "node:path";
+import { deflateSync } from "node:zlib";
 import { Command } from "commander";
 import { parseBrowserTargets, parseCaptureMode, parsePositiveInteger } from "./cli/options.js";
 import { printReport, toHtmlReport, toJsonReport } from "./runner/report.js";
@@ -231,11 +232,287 @@ program
     console.log(`Saved: ${outPath} (${kb}KB, rendered in ${secs}s)`);
   });
 
+// ─── Synthetic PNG helpers for --test mode ────────────────────────────────────
+
+function crc32(buf: Buffer): number {
+  let c = 0xFFFFFFFF;
+  for (let i = 0; i < buf.length; i++) {
+    c ^= buf[i];
+    for (let j = 0; j < 8; j++) c = (c & 1) ? (c >>> 1) ^ 0xEDB88320 : c >>> 1;
+  }
+  return (c ^ 0xFFFFFFFF) >>> 0;
+}
+
+function pngChunk(type: string, data: Buffer): Buffer {
+  const len = Buffer.alloc(4); len.writeUInt32BE(data.length);
+  const t = Buffer.from(type, "ascii");
+  const crcBuf = Buffer.alloc(4); crcBuf.writeUInt32BE(crc32(Buffer.concat([t, data])));
+  return Buffer.concat([len, t, data, crcBuf]);
+}
+
+function makeRGBAPNG(w: number, h: number, px: (x: number, y: number) => [number, number, number, number]): Buffer {
+  const sig = Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0); ihdr.writeUInt32BE(h, 4);
+  ihdr[8] = 8; ihdr[9] = 6; // bit depth=8, color type=RGBA
+  const stride = 1 + w * 4;
+  const raw = Buffer.alloc(h * stride);
+  for (let y = 0; y < h; y++) {
+    raw[y * stride] = 0; // filter None
+    for (let x = 0; x < w; x++) {
+      const [r, g, b, a] = px(x, y);
+      const o = y * stride + 1 + x * 4;
+      raw[o] = r; raw[o + 1] = g; raw[o + 2] = b; raw[o + 3] = a;
+    }
+  }
+  return Buffer.concat([sig, pngChunk("IHDR", ihdr), pngChunk("IDAT", deflateSync(raw)), pngChunk("IEND", Buffer.alloc(0))]);
+}
+
+function makeColorStrip(fw: number, fh: number, colors: [number, number, number, number][]): Buffer {
+  return makeRGBAPNG(fw * colors.length, fh, (x, y) => {
+    void y;
+    return colors[Math.floor(x / fw)];
+  });
+}
+
+// Hollow rectangle: each frame rotated by (fi/n)*2π — transparent inside, semi-transparent border
+function makeHollowRectStrip(
+  fw: number, fh: number,
+  rgb: [number, number, number],
+  borderW: number,
+  nFrames: number,
+  alpha = 200,
+): Buffer {
+  const cx = fw / 2, cy = fh / 2;
+  const hw = fw * 0.38, hh = fh * 0.38;
+  const aa = 1.5; // antialiasing softness in pixels
+  return makeRGBAPNG(fw * nFrames, fh, (x, y) => {
+    const fi = Math.floor(x / fw);
+    const angle = (fi / nFrames) * 2 * Math.PI;
+    const lx = (x % fw) - cx, ly = y - cy;
+    const cos = Math.cos(-angle), sin = Math.sin(-angle);
+    const rx = lx * cos - ly * sin, ry = lx * sin + ly * cos;
+    // Signed distance from each edge (positive = inside)
+    const dOuter = Math.min(hw - Math.abs(rx), hh - Math.abs(ry));
+    const dInner = Math.min(Math.abs(rx) - (hw - borderW), Math.abs(ry) - (hh - borderW));
+    if (dOuter < -aa || dInner < -aa) return [0, 0, 0, 0];
+    const edgeFade = Math.min(
+      Math.min(1, (dOuter + aa) / (aa * 2)),
+      Math.min(1, (dInner + aa) / (aa * 2)),
+    );
+    return [rgb[0], rgb[1], rgb[2], Math.round(alpha * edgeFade)];
+  });
+}
+
+// Hollow ring: single frame, transparent interior/exterior, soft edges
+function makeHollowRingSprite(
+  fw: number, fh: number,
+  rgb: [number, number, number],
+  innerFrac: number,
+  alpha = 200,
+): Buffer {
+  const cx = fw / 2, cy = fh / 2;
+  const outerR = Math.min(cx, cy) * 0.9;
+  const innerR = outerR * innerFrac;
+  const aa = 1.5;
+  return makeRGBAPNG(fw, fh, (x, y) => {
+    const d = Math.sqrt((x - cx) ** 2 + (y - cy) ** 2);
+    const dOuter = outerR - d; // positive inside
+    const dInner = d - innerR; // positive inside ring
+    if (dOuter < -aa || dInner < -aa) return [0, 0, 0, 0];
+    const edgeFade = Math.min(
+      Math.min(1, (dOuter + aa) / (aa * 2)),
+      Math.min(1, (dInner + aa) / (aa * 2)),
+    );
+    return [rgb[0], rgb[1], rgb[2], Math.round(alpha * edgeFade)];
+  });
+}
+
+// Hollow diamond (rotated square): each frame rotated by (fi/n)*2π, semi-transparent
+function makeHollowDiamondStrip(
+  fw: number, fh: number,
+  rgb: [number, number, number],
+  borderW: number,
+  nFrames: number,
+  alpha = 200,
+): Buffer {
+  const cx = fw / 2, cy = fh / 2;
+  const ds = Math.min(fw, fh) * 0.42;
+  const aa = 1.5;
+  return makeRGBAPNG(fw * nFrames, fh, (x, y) => {
+    const fi = Math.floor(x / fw);
+    const angle = Math.PI / 4 + (fi / nFrames) * 2 * Math.PI;
+    const lx = (x % fw) - cx, ly = y - cy;
+    const cos = Math.cos(-angle), sin = Math.sin(-angle);
+    const rx = lx * cos - ly * sin, ry = lx * sin + ly * cos;
+    const manhattanOuter = Math.abs(rx) + Math.abs(ry);
+    const dOuter = ds - manhattanOuter;
+    const dInner = manhattanOuter - (ds - borderW);
+    if (dOuter < -aa || dInner < -aa) return [0, 0, 0, 0];
+    const edgeFade = Math.min(
+      Math.min(1, (dOuter + aa) / (aa * 2)),
+      Math.min(1, (dInner + aa) / (aa * 2)),
+    );
+    return [rgb[0], rgb[1], rgb[2], Math.round(alpha * edgeFade)];
+  });
+}
+
+// ─── render-sprites command ───────────────────────────────────────────────────
+
+type SpriteLayerDef = {
+  name: string;
+  file: string;        // base64 encoded image OR filesystem path
+  frameWidth: number;
+  frameHeight: number;
+  rows?: number;
+  x?: number;
+  y?: number;
+  xExpr?: string;     // FFmpeg overlay x expression (uses t, main_w, overlay_w, ...)
+  yExpr?: string;
+  loop?: boolean;
+};
+
+program
+  .command("render-sprites")
+  .description("Render sprite sheet layers into a composited MP4 via hf-renderer")
+  .option("-r, --renderer <url>", "hf-renderer URL", "http://localhost:9847")
+  .option("--layers <file>", "JSON array: [{name, file(path|base64), frameWidth, frameHeight, ...}]")
+  .option("--fps <n>", "Frames per second", "30")
+  .option("--duration <s>", "Duration in seconds (auto from sprite frame count if omitted)")
+  .option("--width <n>", "Canvas width", "1280")
+  .option("--height <n>", "Canvas height", "720")
+  .option("--quality <q>", "draft | standard | high", "standard")
+  .option("--transparent", "No background, VP9 WebM output with alpha channel preserved")
+  .option("-o, --output <file>", "Output file (default: sprites.mp4 or sprites.webm if --transparent)")
+  .option("--test", "Generate synthetic test sprites (no --layers needed)")
+  .action(async (opts: {
+    renderer: string; layers?: string; fps: string; duration?: string;
+    width: string; height: string; quality: string; transparent?: boolean;
+    output?: string; test?: boolean;
+  }) => {
+    const rendererUrl = opts.renderer.replace(/\/$/, "");
+    try {
+      const h = await fetch(`${rendererUrl}/health`);
+      if (!h.ok) throw new Error(`status ${h.status}`);
+    } catch (e) {
+      console.error(`Renderer not reachable at ${rendererUrl}: ${e instanceof Error ? e.message : e}`);
+      process.exit(1);
+    }
+
+    let layerDefs: SpriteLayerDef[];
+
+    if (opts.test) {
+      const canvasW = parseInt(opts.width, 10), canvasH = parseInt(opts.height, 10);
+      const N = 16; // rotation frames per shape
+      console.log("Generating test sprites (5 crossing rotating hollow shapes)...");
+
+      // Layer 0: dark background cycling 4 deep colors
+      const bgStrip = makeColorStrip(canvasW, canvasH, [
+        [10, 15, 40, 255], [25, 10, 45, 255], [10, 35, 40, 255], [20, 10, 35, 255],
+      ]);
+      // Layer 1: cyan hollow rectangle — CW orbit
+      const rectStrip    = makeHollowRectStrip(120, 120, [0, 220, 230],   10, N, 180);
+      // Layer 2: yellow hollow ring — CCW orbit (ring is symmetric, single frame)
+      const ringSprite   = makeHollowRingSprite(150, 150, [250, 210, 40], 0.5,    180);
+      // Layer 3: magenta hollow diamond — faster orbit, opposite phase
+      const diamondStrip = makeHollowDiamondStrip(100, 100, [230, 50, 220], 8, N, 180);
+      // Layer 4: white hollow rectangle (smaller) — counter-orbit, 90° phase shift
+      const rect2Strip   = makeHollowRectStrip(90, 90, [200, 200, 200],   6, N, 180);
+
+      layerDefs = [
+        {
+          name: "bg.png",
+          file: bgStrip.toString("base64"),
+          frameWidth: canvasW, frameHeight: canvasH,
+        },
+        {
+          name: "rect.png",
+          file: rectStrip.toString("base64"),
+          frameWidth: 120, frameHeight: 120,
+          xExpr: "main_w/2 - overlay_w/2 + main_w*0.28*cos(t*1.5)",
+          yExpr: "main_h/2 - overlay_h/2 + main_h*0.30*sin(t*1.5)",
+        },
+        {
+          name: "ring.png",
+          file: ringSprite.toString("base64"),
+          frameWidth: 150, frameHeight: 150,
+          xExpr: "main_w/2 - overlay_w/2 + main_w*0.32*cos(-t*1.1)",
+          yExpr: "main_h/2 - overlay_h/2 + main_h*0.28*sin(-t*1.1)",
+        },
+        {
+          name: "diamond.png",
+          file: diamondStrip.toString("base64"),
+          frameWidth: 100, frameHeight: 100,
+          xExpr: "main_w/2 - overlay_w/2 + main_w*0.22*cos(t*2.4 + 3.14159)",
+          yExpr: "main_h/2 - overlay_h/2 + main_h*0.24*sin(t*2.4 + 3.14159)",
+        },
+        {
+          name: "rect2.png",
+          file: rect2Strip.toString("base64"),
+          frameWidth: 90, frameHeight: 90,
+          xExpr: "main_w/2 - overlay_w/2 + main_w*0.38*cos(-t*1.8 + 1.5708)",
+          yExpr: "main_h/2 - overlay_h/2 + main_h*0.35*sin(-t*1.8 + 1.5708)",
+        },
+      ];
+    } else if (opts.layers) {
+      const rawDefs = JSON.parse(readFileSync(resolve(opts.layers), "utf-8")) as SpriteLayerDef[];
+      layerDefs = rawDefs.map(d => ({
+        ...d,
+        file: d.file.startsWith("data:") ? d.file.split(",")[1]
+          : d.file.length > 200 && /^[A-Za-z0-9+/=]+$/.test(d.file.slice(0, 50)) ? d.file
+          : readFileSync(resolve(d.file)).toString("base64"),
+      }));
+    } else {
+      console.error("Provide --layers <file.json> or --test");
+      process.exit(1);
+    }
+
+    console.log(`Layers: ${layerDefs.map(l => `${l.name} (${l.frameWidth}×${l.frameHeight} ×${l.rows ?? 1}r)`).join(", ")}`);
+    console.log(`Posting to ${rendererUrl}/render/sprites (fps=${opts.fps}, quality=${opts.quality})...`);
+
+    const defaultOutput = opts.transparent ? "sprites.webm" : "sprites.mp4";
+    const body = {
+      layers: layerDefs,
+      fps: parseInt(opts.fps, 10),
+      ...(opts.duration ? { duration: parseFloat(opts.duration) } : {}),
+      width: parseInt(opts.width, 10),
+      height: parseInt(opts.height, 10),
+      quality: opts.quality,
+      transparent: opts.transparent ?? false,
+    };
+
+    const res = await fetch(`${rendererUrl}/render/sprites`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(10 * 60 * 1000),
+    });
+
+    const result = await res.json() as {
+      success: boolean; error?: string;
+      outputToken?: string; durationMs?: number; fileSize?: number;
+    };
+
+    if (!result.success || !result.outputToken) {
+      console.error(`Render failed: ${result.error ?? "unknown error"}`);
+      process.exit(1);
+    }
+
+    const videoRes = await fetch(`${rendererUrl}/outputs/${result.outputToken}`);
+    if (!videoRes.ok) { console.error(`Download failed: ${videoRes.status}`); process.exit(1); }
+
+    const outPath = resolve(opts.output ?? defaultOutput);
+    writeFileSync(outPath, Buffer.from(await videoRes.arrayBuffer()));
+    const secs = ((result.durationMs ?? 0) / 1000).toFixed(1);
+    const kb   = Math.round((result.fileSize ?? 0) / 1024);
+    console.log(`Saved: ${outPath} (${kb}KB, rendered in ${secs}s)`);
+  });
+
 program.parse();
 
-const ASSET_EXTS  = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".css", ".js", ".woff", ".woff2"]);
-const IMAGE_EXTS  = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp"]);
-const SEQ_PATTERN = /^(.+?)_?(\d{2,})\.(png|jpe?g|gif|webp)$/i;
+const ASSET_EXTS  = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".svg", ".css", ".js", ".woff", ".woff2"]);
+const IMAGE_EXTS  = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif"]);
+const SEQ_PATTERN = /^(.+?)_?(\d{2,})\.(png|jpe?g|gif|webp|avif)$/i;
 
 // B: size limits (matching server)
 const FILE_WARN_BYTES  = 10 * 1024 * 1024;  // warn at 10MB
