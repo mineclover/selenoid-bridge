@@ -136,14 +136,18 @@ program
   .option("-o, --output <file>", "Output video path")
   .option("--fps <n>", "Frames per second", "30")
   .option("--quality <q>", "Quality: draft, standard, high", "standard")
-  .option("--format <f>", "Output format: mp4, webm, mov", "mp4")
-  .option("--files <dir>", "Directory of asset files to serve alongside the HTML (images, CSS, etc.)")
+  .option("--format <f>", "Output format: mp4, webm", "mp4")
+  .option("--width <n>", "Viewport width in px", "1280")
+  .option("--height <n>", "Viewport height in px", "720")
+  .option("--files <dir>", "Asset directory (default: same dir as HTML)")
   .action(async (source: string, opts: {
     renderer: string;
     output?: string;
     fps: string;
     quality: string;
     format: string;
+    width: string;
+    height: string;
     files?: string;
   }) => {
     const rendererUrl = opts.renderer.replace(/\/$/, "");
@@ -167,14 +171,25 @@ program
       // Auto-include sibling files in the same directory as the HTML
       // (unless --files points elsewhere)
       const assetsDir = resolve(opts.files ?? dirname(htmlPath));
-      const files = collectFiles(assetsDir, htmlPath);
+      const { files, meta } = collectAssets(assetsDir, htmlPath);
       if (Object.keys(files).length > 0) {
         body.files = files;
-        console.log(`Assets: ${Object.keys(files).join(", ")}`);
+        body.meta = meta;
+        const names = Object.keys(files);
+        console.log(`Assets: ${names.join(", ")}`);
+        const withMeta = Object.keys(meta);
+        if (withMeta.length > 0) console.log(`Frame meta: ${withMeta.map(n => `${n}(${meta[n].frameWidth}x${meta[n].frameHeight})`).join(", ")}`);
       }
     }
 
-    body = { ...body, fps: parseInt(opts.fps, 10), quality: opts.quality, format: opts.format };
+    body = {
+      ...body,
+      fps: parseInt(opts.fps, 10),
+      quality: opts.quality,
+      format: opts.format,
+      width: parseInt(opts.width, 10),
+      height: parseInt(opts.height, 10),
+    };
 
     console.log(`Rendering via ${rendererUrl} (fps=${opts.fps}, quality=${opts.quality})...`);
 
@@ -218,22 +233,38 @@ program
 
 program.parse();
 
-const ASSET_EXTS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".css", ".js", ".json", ".woff", ".woff2"]);
+const ASSET_EXTS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".css", ".js", ".woff", ".woff2"]);
 
-function collectFiles(dir: string, excludeHtml: string): Record<string, string> {
+interface FileMeta { frameWidth?: number; frameHeight?: number }
+
+function collectAssets(dir: string, excludeHtml: string): {
+  files: Record<string, string>;
+  meta: Record<string, FileMeta>;
+} {
   const files: Record<string, string> = {};
+  const meta: Record<string, FileMeta> = {};
   try {
     for (const name of readdirSync(dir)) {
       const fullPath = join(dir, name);
-      if (fullPath === excludeHtml) continue;
-      if (statSync(fullPath).isFile() && ASSET_EXTS.has(extname(name).toLowerCase())) {
+      if (!statSync(fullPath).isFile()) continue;
+      const ext = extname(name).toLowerCase();
+
+      // Asset file
+      if (ASSET_EXTS.has(ext) && fullPath !== excludeHtml) {
         files[name] = readFileSync(fullPath).toString("base64");
       }
+
+      // Sidecar: sprite.png.meta.json  →  meta for sprite.png
+      if (name.endsWith(".meta.json")) {
+        const assetName = name.replace(/\.meta\.json$/, "");
+        try {
+          const data = JSON.parse(readFileSync(fullPath, "utf-8")) as FileMeta;
+          if (data.frameWidth || data.frameHeight) meta[assetName] = data;
+        } catch { /* skip malformed */ }
+      }
     }
-  } catch {
-    // dir not readable — skip
-  }
-  return files;
+  } catch { /* dir not readable */ }
+  return { files, meta };
 }
 
 function slugify(value: string): string {
