@@ -36,7 +36,7 @@ function validateStep(step: unknown, index: number): void {
   }
 
   const s = step as Record<string, unknown>;
-  const validActions = ["goto", "click", "fill", "select", "check", "hover", "scroll", "press", "wait", "assert"];
+  const validActions = ["goto", "click", "fill", "select", "check", "hover", "scroll", "press", "wait", "assert", "record", "measure"];
 
   if (!validActions.includes(s.action as string)) {
     throw new Error(`Step ${index}: invalid action "${s.action}"`);
@@ -87,6 +87,19 @@ function validateStep(step: unknown, index: number): void {
     (typeof s.selectorKey !== "string" || !s.selectorKey)
   ) {
     throw new Error(`Step ${index}: assert ${s.type} requires selector or selectorKey`);
+  }
+  if (s.action === "record") {
+    if (s.mode !== "start" && s.mode !== "stop") {
+      throw new Error(`Step ${index}: record requires mode "start" or "stop"`);
+    }
+  }
+  if (s.action === "measure") {
+    if (!s.selector && (typeof s.selectorKey !== "string" || !s.selectorKey)) {
+      throw new Error(`Step ${index}: measure requires selector or selectorKey`);
+    }
+    if (s.event !== undefined && !["animationend", "transitionend"].includes(s.event as string)) {
+      throw new Error(`Step ${index}: measure event must be animationend or transitionend`);
+    }
   }
 }
 

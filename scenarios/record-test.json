@@ -1,0 +1,46 @@
+{
+  "name": "record-test",
+  "baseUrl": "https://www.google.com",
+  "steps": [
+    {
+      "action": "goto",
+      "url": "/",
+      "name": "open google",
+      "capture": "always"
+    },
+    {
+      "action": "record",
+      "mode": "start",
+      "id": "search-anim",
+      "name": "start recording"
+    },
+    {
+      "action": "fill",
+      "selector": { "css": "textarea[name='q']", "strategy": "css-path" },
+      "value": "selenoid browser testing",
+      "name": "type search query"
+    },
+    {
+      "action": "press",
+      "key": "Enter",
+      "name": "submit search"
+    },
+    {
+      "action": "wait",
+      "ms": 2000,
+      "name": "wait for results"
+    },
+    {
+      "action": "record",
+      "mode": "stop",
+      "id": "search-anim",
+      "name": "stop recording"
+    },
+    {
+      "action": "assert",
+      "type": "title",
+      "expected": "selenoid",
+      "name": "verify results page"
+    }
+  ]
+}

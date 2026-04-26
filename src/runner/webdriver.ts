@@ -62,22 +62,27 @@ export class WebDriverClient {
     return data.value;
   }
 
-  async createSession(browser: BrowserTarget): Promise<string> {
-    const alwaysMatch: Record<string, string> = {
+  async createSession(
+    browser: BrowserTarget,
+    selenoidOptions?: Record<string, unknown>,
+  ): Promise<{ sessionId: string; cdpUrl?: string }> {
+    const alwaysMatch: Record<string, unknown> = {
       browserName: browser.browserName,
     };
     if (browser.browserVersion) {
       alwaysMatch.browserVersion = browser.browserVersion;
     }
+    if (selenoidOptions) {
+      alwaysMatch["selenoid:options"] = selenoidOptions;
+    }
 
     const result = await this.request("POST", "/wd/hub/session", {
-      capabilities: {
-        alwaysMatch,
-      },
-    }) as { sessionId: string };
+      capabilities: { alwaysMatch },
+    }) as { sessionId: string; capabilities?: Record<string, unknown> };
 
     this.sessionId = result.sessionId;
-    return this.sessionId;
+    const cdpUrl = result.capabilities?.["se:cdp"] as string | undefined;
+    return { sessionId: this.sessionId, cdpUrl };
   }
 
   async deleteSession(): Promise<void> {
@@ -147,11 +152,11 @@ export class WebDriverClient {
 
   async fill(selector: Selector, text: string): Promise<void> {
     const elementId = await this.findElement(selector);
-    // Clear existing value
-    await this.request("POST", `/wd/hub/session/${this.sessionId}/element/${elementId}/clear`);
-    // Type new value
+    await this.request("POST", `/wd/hub/session/${this.sessionId}/element/${elementId}/clear`, {});
+    // W3C spec requires both text (string) and value (char array) for compatibility
     await this.request("POST", `/wd/hub/session/${this.sessionId}/element/${elementId}/value`, {
       text,
+      value: [...text],
     });
   }
 
@@ -230,11 +235,33 @@ export class WebDriverClient {
     });
   }
 
-  private async executeScript(script: string, args: unknown[] = []): Promise<unknown> {
+  async executeScript(script: string, args: unknown[] = []): Promise<unknown> {
     return this.request("POST", `/wd/hub/session/${this.sessionId}/execute/sync`, {
       script,
       args,
     });
+  }
+
+  async sendCdpCommand(cmd: string, params: Record<string, unknown> = {}): Promise<unknown> {
+    return this.request("POST", `/wd/hub/session/${this.sessionId}/goog/cdp/execute`, {
+      cmd,
+      params,
+    });
+  }
+
+  async downloadVideo(filename: string): Promise<Buffer> {
+    const url = `${this.baseUrl}/video/${filename}`;
+    const controller = this.requestTimeoutMs > 0 ? new AbortController() : undefined;
+    const timeout = controller
+      ? setTimeout(() => controller.abort(), this.requestTimeoutMs)
+      : undefined;
+    try {
+      const res = await fetch(url, { signal: controller?.signal });
+      if (!res.ok) throw new Error(`Video download failed: ${res.status} ${url}`);
+      return Buffer.from(await res.arrayBuffer());
+    } finally {
+      if (timeout) clearTimeout(timeout);
+    }
   }
 
   private elementReference(elementId: string): Record<string, string> {

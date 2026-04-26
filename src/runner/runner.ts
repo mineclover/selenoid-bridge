@@ -1,16 +1,33 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join, relative } from "node:path";
 import { WebDriverClient } from "./webdriver.js";
+import { CdpSession } from "./cdp.js";
+import { saveCdpFrames, extractVideoFrames, buildTimingReport } from "./compare.js";
 import type {
   BrowserTarget,
   RunArtifacts,
   RunOptions,
   RunResult,
   Scenario,
+  ScreencastFrame,
   Selector,
   Step,
   StepResult,
+  TimingReport,
 } from "../scenario/types.js";
+
+interface ActiveRecording {
+  id: string;
+  jsStartMs: number;
+  cdp: CdpSession;
+}
+
+interface CompletedRecording {
+  id: string;
+  jsStartMs: number;
+  jsEndMs: number;
+  frames: ScreencastFrame[];
+}
 
 export async function runScenario(
   selenoidUrl: string,
@@ -26,10 +43,16 @@ export async function runScenario(
   const startedAt = new Date(startTime).toISOString();
   let failed = false;
 
+  const activeRecordings = new Map<string, ActiveRecording>();
+  const completedRecordings: CompletedRecording[] = [];
   const browserArtifactsDir = await ensureBrowserArtifactsDir(options.artifactsDir, browser);
+  const videoName = `${slugify(`${browser.browserName}-${browser.browserVersion}`)}-${startTime}.mp4`;
 
   try {
-    await client.createSession(browser);
+    await client.createSession(
+      browser,
+      options.enableVideo ? { enableVideo: true, videoName } : undefined,
+    );
 
     for (let i = 0; i < scenario.steps.length; i++) {
       const step = scenario.steps[i];
@@ -46,32 +69,89 @@ export async function runScenario(
       }
 
       try {
-        await executeStep(client, step, scenario.baseUrl, scenario.selectors);
+        const stepArtifacts = await executeStep(
+          client,
+          step,
+          scenario.baseUrl,
+          scenario.selectors,
+          activeRecordings,
+          completedRecordings,
+        );
+        const collected = await collectArtifacts(client, options.artifactsDir, browserArtifactsDir, step, i, "passed", options.capture);
         stepResults.push({
           step,
           index: i,
           status: "passed",
           duration: Date.now() - stepStart,
-          artifacts: await collectArtifacts(client, options.artifactsDir, browserArtifactsDir, step, i, "passed", options.capture),
+          artifacts: mergeArtifacts(collected, stepArtifacts),
         });
       } catch (e: unknown) {
         failed = true;
+        const collected = await collectArtifacts(client, options.artifactsDir, browserArtifactsDir, step, i, "failed", options.capture);
         stepResults.push({
           step,
           index: i,
           status: "failed",
           duration: Date.now() - stepStart,
           error: e instanceof Error ? e.message : String(e),
-          artifacts: await collectArtifacts(client, options.artifactsDir, browserArtifactsDir, step, i, "failed", options.capture),
+          artifacts: collected,
         });
       }
     }
   } finally {
+    // Close any still-active CDP sessions
+    for (const rec of activeRecordings.values()) {
+      const frames = rec.cdp.stopScreencast();
+      rec.cdp.close();
+      completedRecordings.push({ id: rec.id, jsStartMs: rec.jsStartMs, jsEndMs: Date.now(), frames });
+    }
+    activeRecordings.clear();
+
     try {
       await client.deleteSession();
     } catch {
       // ignore cleanup errors
     }
+  }
+
+  // Post-session: build timing reports for completed recordings
+  const timingReports: TimingReport[] = [];
+  for (const rec of completedRecordings) {
+    if (!browserArtifactsDir) continue;
+
+    const cdpFramesDir = join(browserArtifactsDir, `cdp-frames-${rec.id}`);
+    await saveCdpFrames(rec.frames, cdpFramesDir).catch(() => undefined);
+
+    let videoPath: string | undefined;
+    let selenoidFrameTimestampsMs: number[] | undefined;
+
+    if (options.enableVideo) {
+      try {
+        const videoBuffer = await client.downloadVideo(videoName);
+        const absVideoPath = join(browserArtifactsDir, videoName);
+        await writeFile(absVideoPath, videoBuffer);
+        videoPath = relative(options.artifactsDir!, absVideoPath);
+
+        const selenoidFramesDir = join(browserArtifactsDir, `selenoid-frames-${rec.id}`);
+        selenoidFrameTimestampsMs = await extractVideoFrames(
+          absVideoPath,
+          selenoidFramesDir,
+          startTime,
+        ).catch(() => undefined);
+      } catch {
+        // video download or ffmpeg failed — report proceeds without selenoid frames
+      }
+    }
+
+    timingReports.push(buildTimingReport(
+      rec.id,
+      rec.jsStartMs,
+      rec.jsEndMs,
+      rec.frames,
+      selenoidFrameTimestampsMs,
+      videoPath,
+      relative(options.artifactsDir ?? browserArtifactsDir, cdpFramesDir),
+    ));
   }
 
   return {
@@ -83,6 +163,7 @@ export async function runScenario(
     startedAt,
     finishedAt: new Date().toISOString(),
     artifactsDir: browserArtifactsDir,
+    timingReports: timingReports.length > 0 ? timingReports : undefined,
   };
 }
 
@@ -91,7 +172,9 @@ async function executeStep(
   step: Step,
   baseUrl: string,
   selectors: Scenario["selectors"],
-): Promise<void> {
+  activeRecordings: Map<string, ActiveRecording>,
+  completedRecordings: CompletedRecording[],
+): Promise<RunArtifacts | undefined> {
   switch (step.action) {
     case "goto": {
       const url = step.url.startsWith("http") ? step.url : `${baseUrl}${step.url}`;
@@ -144,7 +227,67 @@ async function executeStep(
     case "assert":
       await executeAssert(client, step, selectors);
       break;
+
+    case "record": {
+      const recId = step.id ?? "default";
+      if (step.mode === "start") {
+        const cdp = new CdpSession();
+        cdp.attach(client);
+        await cdp.startScreencast();
+        activeRecordings.set(recId, { id: recId, jsStartMs: Date.now(), cdp });
+      } else {
+        const rec = activeRecordings.get(recId);
+        if (rec) {
+          const frames = rec.cdp.stopScreencast();
+          rec.cdp.close();
+          activeRecordings.delete(recId);
+          completedRecordings.push({ id: recId, jsStartMs: rec.jsStartMs, jsEndMs: Date.now(), frames });
+        }
+      }
+      break;
+    }
+
+    case "measure": {
+      const selector = step.selector ?? (step.selectorKey ? resolveSelectorForStep(step, selectors, "measure") : null);
+      const event = step.event ?? "animationend";
+      const timeoutMs = step.ms ?? 10_000;
+
+      if (!selector) throw new Error("measure requires selector or selectorKey");
+
+      const jsStartMs = await client.executeScript(`
+        const el = document.querySelector(arguments[0]);
+        if (!el) throw new Error("measure: element not found: " + arguments[0]);
+        window.__bridge_measure = { done: false, endMs: 0 };
+        el.addEventListener(arguments[1], function() {
+          window.__bridge_measure.done = true;
+          window.__bridge_measure.endMs = Date.now();
+        }, { once: true });
+        return Date.now();
+      `, [selector.css, event]) as number;
+
+      const deadline = Date.now() + timeoutMs;
+      let jsEndMs = 0;
+      while (Date.now() < deadline) {
+        const done = await client.executeScript(`return !!(window.__bridge_measure && window.__bridge_measure.done);`) as boolean;
+        if (done) {
+          jsEndMs = await client.executeScript(`return window.__bridge_measure.endMs;`) as number;
+          break;
+        }
+        await sleep(50);
+      }
+      if (!jsEndMs) throw new Error(`measure: timeout waiting for ${event} on ${selector.css}`);
+
+      return {
+        measureResult: {
+          label: step.label,
+          startMs: jsStartMs,
+          endMs: jsEndMs,
+          durationMs: jsEndMs - jsStartMs,
+        },
+      };
+    }
   }
+  return undefined;
 }
 
 async function executeAssert(
@@ -308,6 +451,14 @@ export function shouldCaptureStep(
   if (preference === "off") return false;
   if (preference === "always") return true;
   return status === "failed";
+}
+
+function mergeArtifacts(
+  base: RunArtifacts | undefined,
+  extra: RunArtifacts | undefined,
+): RunArtifacts | undefined {
+  if (!extra) return base;
+  return { ...base, ...extra };
 }
 
 async function safeRead<T>(fn: () => Promise<T>): Promise<T | undefined> {

@@ -4,7 +4,7 @@ export interface Selector {
   strategy: "data-testid" | "id" | "aria-label" | "role-name" | "text" | "css-path";
 }
 
-export type StepAction = "goto" | "click" | "fill" | "select" | "check" | "hover" | "scroll" | "press" | "wait" | "assert";
+export type StepAction = "goto" | "click" | "fill" | "select" | "check" | "hover" | "scroll" | "press" | "wait" | "assert" | "record" | "measure";
 export type CapturePreference = "always" | "failure" | "off";
 
 export interface StepMeta {
@@ -63,6 +63,20 @@ export interface AssertStep {
   expected?: string;
 }
 
+export interface RecordStep {
+  action: "record";
+  mode: "start" | "stop";
+  id?: string;
+}
+
+export interface MeasureStep {
+  action: "measure";
+  selector?: Selector;
+  event?: "animationend" | "transitionend";
+  label?: string;
+  ms?: number;
+}
+
 export type Step =
   | (StepMeta & GotoStep)
   | (StepMeta & ElementStep)
@@ -71,7 +85,9 @@ export type Step =
   | (StepMeta & PressStep)
   | (StepMeta & ScrollStep)
   | (StepMeta & WaitStep)
-  | (StepMeta & AssertStep);
+  | (StepMeta & AssertStep)
+  | (StepMeta & RecordStep)
+  | (StepMeta & MeasureStep);
 
 export interface ScenarioJourney {
   actor?: string;
@@ -105,10 +121,35 @@ export interface RunConfig {
   timeout?: number;
 }
 
+export interface ScreencastFrame {
+  timestampMs: number;
+  data: Buffer;
+}
+
+export interface MeasureResult {
+  label?: string;
+  startMs: number;
+  endMs: number;
+  durationMs: number;
+}
+
+export interface TimingReport {
+  id: string;
+  js: { startMs: number; endMs: number; durationMs: number };
+  cdp: { firstFrameMs: number; lastFrameMs: number; frameCount: number };
+  selenoid?: { firstChangeMs: number; lastChangeMs: number };
+  lag: { renderMs: number; renderEndMs: number; vncMs?: number };
+  videoPath?: string;
+  cdpFramesDir?: string;
+}
+
 export interface RunArtifacts {
   screenshotPath?: string;
   pageUrl?: string;
   pageTitle?: string;
+  measureResult?: MeasureResult;
+  timingReport?: TimingReport;
+  videoPath?: string;
 }
 
 export interface StepResult {
@@ -129,6 +170,7 @@ export interface RunResult {
   startedAt: string;
   finishedAt: string;
   artifactsDir?: string;
+  timingReports?: TimingReport[];
 }
 
 export interface RunOptions {
@@ -136,4 +178,5 @@ export interface RunOptions {
   capture?: CapturePreference | "all";
   concurrency?: number;
   requestTimeoutMs?: number;
+  enableVideo?: boolean;
 }

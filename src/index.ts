@@ -27,6 +27,7 @@ program
   .option("-c, --capture <mode>", "Capture mode: all, failure, off", "failure")
   .option("--concurrency <count>", "Max parallel browser runs", "5")
   .option("--request-timeout <ms>", "WebDriver request timeout in milliseconds", "30000")
+  .option("--enable-video", "Record session video via Selenoid and download after run")
   .action(async (scenarioPath: string, opts: {
     selenoid: string;
     browsers: string;
@@ -35,6 +36,7 @@ program
     capture: string;
     concurrency: string;
     requestTimeout: string;
+    enableVideo?: boolean;
   }) => {
     let capture: "all" | "failure" | "off";
     let concurrency: number;
@@ -62,11 +64,16 @@ program
     console.log(`Selenoid: ${opts.selenoid}`);
     console.log(`Artifacts: ${artifactsDir}`);
 
+    if (opts.enableVideo) {
+      console.log("Video recording: enabled");
+    }
+
     const results = await runParallel(opts.selenoid, scenario, browsers, {
       artifactsDir,
       capture,
       concurrency,
       requestTimeoutMs,
+      enableVideo: opts.enableVideo ?? false,
     });
 
     printReport(results);
