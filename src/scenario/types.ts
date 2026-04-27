@@ -179,4 +179,5 @@ export interface RunOptions {
   concurrency?: number;
   requestTimeoutMs?: number;
   enableVideo?: boolean;
+  extensions?: string[];  // container-side paths passed to --load-extension
 }

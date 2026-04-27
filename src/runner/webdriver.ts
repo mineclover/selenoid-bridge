@@ -66,6 +66,7 @@ export class WebDriverClient {
     browser: BrowserTarget,
     selenoidOptions?: Record<string, unknown>,
     stealth: boolean = true,
+    extensions?: string[],
   ): Promise<{ sessionId: string; cdpUrl?: string }> {
     const alwaysMatch: Record<string, unknown> = {
       browserName: browser.browserName,
@@ -77,21 +78,29 @@ export class WebDriverClient {
       alwaysMatch["selenoid:options"] = selenoidOptions;
     }
 
-    if (stealth && browser.browserName === "chrome") {
-      alwaysMatch["goog:chromeOptions"] = {
-        args: [
-          "--disable-blink-features=AutomationControlled",
-          "--lang=ko-KR",
-          "--window-size=1366,768",
-        ],
-        excludeSwitches: ["enable-automation"],
-        useAutomationExtension: false,
-        prefs: {
-          "intl.accept_languages": "ko-KR,ko,en-US,en",
-          "credentials_enable_service": false,
-          "profile.password_manager_enabled": false,
-        },
-      };
+    if (browser.browserName === "chrome") {
+      const args = [
+        "--disable-blink-features=AutomationControlled",
+        "--lang=ko-KR",
+        "--window-size=1366,768",
+      ];
+      if (extensions && extensions.length > 0) {
+        args.push(`--load-extension=${extensions.join(",")}`);
+      }
+      if (stealth) {
+        alwaysMatch["goog:chromeOptions"] = {
+          args,
+          excludeSwitches: ["enable-automation"],
+          useAutomationExtension: false,
+          prefs: {
+            "intl.accept_languages": "ko-KR,ko,en-US,en",
+            "credentials_enable_service": false,
+            "profile.password_manager_enabled": false,
+          },
+        };
+      } else if (extensions && extensions.length > 0) {
+        alwaysMatch["goog:chromeOptions"] = { args };
+      }
     }
 
     const result = await this.request("POST", "/wd/hub/session", {

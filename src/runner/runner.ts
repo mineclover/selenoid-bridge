@@ -52,6 +52,8 @@ export async function runScenario(
     await client.createSession(
       browser,
       options.enableVideo ? { enableVideo: true, videoName } : undefined,
+      true,
+      options.extensions,
     );
 
     for (let i = 0; i < scenario.steps.length; i++) {
