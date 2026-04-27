@@ -421,6 +421,14 @@ program
       // Layer 4: white hollow rectangle (smaller) — counter-orbit, 90° phase shift
       const rect2Strip   = makeHollowRectStrip(90, 90, [200, 200, 200],   6, N, 180);
 
+      // All shapes share the same orbit radius so their paths intersect —
+      // different speeds/directions cause them to overtake each other (crossing).
+      // rx/ry account for overlay size so the shape center traces the orbit circle.
+      const rx = "(main_w - overlay_w) * 0.38";
+      const ry = "(main_h - overlay_h) * 0.38";
+      const cx = "main_w/2 - overlay_w/2";
+      const cy = "main_h/2 - overlay_h/2";
+
       layerDefs = [
         {
           name: "bg.png",
@@ -431,29 +439,29 @@ program
           name: "rect.png",
           file: rectStrip.toString("base64"),
           frameWidth: 120, frameHeight: 120,
-          xExpr: "main_w/2 - overlay_w/2 + main_w*0.28*cos(t*1.5)",
-          yExpr: "main_h/2 - overlay_h/2 + main_h*0.30*sin(t*1.5)",
+          xExpr: `${cx} + ${rx}*cos(t*1.0)`,
+          yExpr: `${cy} + ${ry}*sin(t*1.0)`,
         },
         {
           name: "ring.png",
           file: ringSprite.toString("base64"),
           frameWidth: 150, frameHeight: 150,
-          xExpr: "main_w/2 - overlay_w/2 + main_w*0.32*cos(-t*1.1)",
-          yExpr: "main_h/2 - overlay_h/2 + main_h*0.28*sin(-t*1.1)",
+          xExpr: `${cx} + ${rx}*cos(-t*1.4 + 1.0472)`,
+          yExpr: `${cy} + ${ry}*sin(-t*1.4 + 1.0472)`,
         },
         {
           name: "diamond.png",
           file: diamondStrip.toString("base64"),
           frameWidth: 100, frameHeight: 100,
-          xExpr: "main_w/2 - overlay_w/2 + main_w*0.22*cos(t*2.4 + 3.14159)",
-          yExpr: "main_h/2 - overlay_h/2 + main_h*0.24*sin(t*2.4 + 3.14159)",
+          xExpr: `${cx} + ${rx}*cos(t*1.9 + 2.0944)`,
+          yExpr: `${cy} + ${ry}*sin(t*1.9 + 2.0944)`,
         },
         {
           name: "rect2.png",
           file: rect2Strip.toString("base64"),
           frameWidth: 90, frameHeight: 90,
-          xExpr: "main_w/2 - overlay_w/2 + main_w*0.38*cos(-t*1.8 + 1.5708)",
-          yExpr: "main_h/2 - overlay_h/2 + main_h*0.35*sin(-t*1.8 + 1.5708)",
+          xExpr: `${cx} + ${rx}*cos(-t*2.5 + 3.1416)`,
+          yExpr: `${cy} + ${ry}*sin(-t*2.5 + 3.1416)`,
         },
       ];
     } else if (opts.layers) {

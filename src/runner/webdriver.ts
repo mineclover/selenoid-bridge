@@ -65,6 +65,7 @@ export class WebDriverClient {
   async createSession(
     browser: BrowserTarget,
     selenoidOptions?: Record<string, unknown>,
+    stealth: boolean = true,
   ): Promise<{ sessionId: string; cdpUrl?: string }> {
     const alwaysMatch: Record<string, unknown> = {
       browserName: browser.browserName,
@@ -76,13 +77,60 @@ export class WebDriverClient {
       alwaysMatch["selenoid:options"] = selenoidOptions;
     }
 
+    if (stealth && browser.browserName === "chrome") {
+      alwaysMatch["goog:chromeOptions"] = {
+        args: [
+          "--disable-blink-features=AutomationControlled",
+          "--lang=ko-KR",
+          "--window-size=1366,768",
+        ],
+        excludeSwitches: ["enable-automation"],
+        useAutomationExtension: false,
+        prefs: {
+          "intl.accept_languages": "ko-KR,ko,en-US,en",
+          "credentials_enable_service": false,
+          "profile.password_manager_enabled": false,
+        },
+      };
+    }
+
     const result = await this.request("POST", "/wd/hub/session", {
       capabilities: { alwaysMatch },
     }) as { sessionId: string; capabilities?: Record<string, unknown> };
 
     this.sessionId = result.sessionId;
     const cdpUrl = result.capabilities?.["se:cdp"] as string | undefined;
+
+    if (stealth && browser.browserName === "chrome") {
+      await this.applyStealth().catch(() => undefined);
+    }
+
     return { sessionId: this.sessionId, cdpUrl };
+  }
+
+  private async applyStealth(): Promise<void> {
+    await this.sendCdpCommand("Page.addScriptToEvaluateOnNewDocument", {
+      source: `
+        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+        Object.defineProperty(navigator, 'languages', { get: () => ['ko-KR','ko','en-US','en'] });
+        Object.defineProperty(navigator, 'plugins',   { get: () => [1,2,3,4,5] });
+        if (!window.chrome) window.chrome = {};
+        if (!window.chrome.runtime) window.chrome.runtime = {};
+        const _origQuery = navigator.permissions && navigator.permissions.query;
+        if (_origQuery) {
+          navigator.permissions.query = (p) =>
+            p && p.name === 'notifications'
+              ? Promise.resolve({ state: Notification.permission })
+              : _origQuery.call(navigator.permissions, p);
+        }
+      `,
+    });
+    await this.sendCdpCommand("Network.setUserAgentOverride", {
+      userAgent:
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+      acceptLanguage: "ko-KR,ko;q=0.9,en;q=0.8",
+      platform: "MacIntel",
+    });
   }
 
   async deleteSession(): Promise<void> {
