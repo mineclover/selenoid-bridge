@@ -30,39 +30,53 @@ export class WebDriverClient {
   }
 
   private async request(method: string, path: string, body?: unknown): Promise<unknown> {
-    const url = `${this.baseUrl}${path}`;
-    const controller = this.requestTimeoutMs > 0 ? new AbortController() : undefined;
-    const timeout = controller
-      ? setTimeout(() => controller.abort(), this.requestTimeoutMs)
-      : undefined;
+    const retryDelays = [300, 900, 2700];
+    const retryableStatus = new Set([502, 503, 504]);
 
-    let res: Response;
-    try {
-      res = await fetch(url, {
-        method,
-        headers: body ? { "Content-Type": "application/json" } : {},
-        body: body ? JSON.stringify(body) : undefined,
-        signal: controller?.signal,
-      });
-    } catch (e: unknown) {
-      if (e instanceof Error && e.name === "AbortError") {
-        throw new Error(`WebDriver request timed out after ${this.requestTimeoutMs}ms: ${method} ${path}`);
+    for (let attempt = 0; ; attempt++) {
+      const url = `${this.baseUrl}${path}`;
+      const controller = this.requestTimeoutMs > 0 ? new AbortController() : undefined;
+      const timeout = controller
+        ? setTimeout(() => controller.abort(), this.requestTimeoutMs)
+        : undefined;
+
+      let res: Response;
+      try {
+        res = await fetch(url, {
+          method,
+          headers: body ? { "Content-Type": "application/json" } : {},
+          body: body ? JSON.stringify(body) : undefined,
+          signal: controller?.signal,
+        });
+      } catch (e: unknown) {
+        if (e instanceof Error && e.name === "AbortError") {
+          throw new Error(`WebDriver request timed out after ${this.requestTimeoutMs}ms: ${method} ${path}`);
+        }
+        if (attempt < retryDelays.length) {
+          await new Promise(resolve => setTimeout(resolve, retryDelays[attempt]));
+          continue;
+        }
+        throw e;
+      } finally {
+        if (timeout) clearTimeout(timeout);
       }
-      throw e;
-    } finally {
-      if (timeout) clearTimeout(timeout);
+
+      if (retryableStatus.has(res.status) && attempt < retryDelays.length) {
+        await new Promise(resolve => setTimeout(resolve, retryDelays[attempt]));
+        continue;
+      }
+
+      const data = await res.json() as { value: unknown };
+
+      if (res.status >= 400) {
+        const errorValue = data.value as Record<string, unknown> | undefined;
+        const msg = errorValue?.message || errorValue?.error || JSON.stringify(data);
+        const errorCode = typeof errorValue?.error === "string" ? errorValue.error : undefined;
+        throw new WebDriverError(`WebDriver error: ${msg}`, res.status, errorCode);
+      }
+
+      return data.value;
     }
-
-    const data = await res.json() as { value: unknown };
-
-    if (res.status >= 400) {
-      const errorValue = data.value as Record<string, unknown> | undefined;
-      const msg = errorValue?.message || errorValue?.error || JSON.stringify(data);
-      const errorCode = typeof errorValue?.error === "string" ? errorValue.error : undefined;
-      throw new WebDriverError(`WebDriver error: ${msg}`, res.status, errorCode);
-    }
-
-    return data.value;
   }
 
   async createSession(
@@ -114,7 +128,7 @@ export class WebDriverClient {
     const cdpUrl = result.capabilities?.["se:cdp"] as string | undefined;
 
     if (stealth && browser.browserName === "chrome") {
-      await this.applyStealth().catch(() => undefined);
+      await this.applyStealth().catch((e: unknown) => console.warn("[stealth] CDP injection failed:", e instanceof Error ? e.message : String(e)));
     }
 
     return { sessionId: this.sessionId, cdpUrl };

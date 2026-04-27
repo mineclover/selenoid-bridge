@@ -121,6 +121,35 @@ SELENOID_VIDEO_DIR=$(pwd)/video docker compose -f docker-compose.local.yml up -d
 # 비디오: packages/selenoid/video/*.mp4
 ```
 
+## Scenario Actions
+
+All actions support `id`, `name`, `phase`, `capture` meta fields.
+
+| action | required fields | notes |
+|--------|----------------|-------|
+| goto | url | |
+| click | selector or selectorKey | |
+| double-click | selector or selectorKey | W3C double-click |
+| right-click | selector or selectorKey | W3C button:2 |
+| fill | selector or selectorKey, value | clears then types |
+| select | selector or selectorKey, value | clicks option by value |
+| check | selector or selectorKey | skips if already checked |
+| hover | selector or selectorKey | pointerMove |
+| scroll | selector/selectorKey and/or direction+amount | |
+| press | key | single key name (Enter, Tab, Escape, ...) |
+| press (combo) | keys: ["Control","c"] | modifier combo; keys overrides key |
+| wait | ms? / selector? / selectorKey? | |
+| upload | selector or selectorKey, filePath | Selenium remote file protocol |
+| assert | type, selector/selectorKey?, expected? | visible/hidden/text/title/url/value |
+| record | mode: "start"/"stop", id? | CDP screencast |
+| measure | selector or selectorKey, event?, ms? | animationend/transitionend |
+
+**Key names for `press`:** Enter, Tab, Escape, Backspace, Delete, ArrowUp/Down/Left/Right, Control, Shift, Alt, Meta/Command, Home, End, PageUp, PageDown, F5
+
+**Modifier combo example:**
+`{ "action": "press", "keys": ["Control", "a"] }` — selects all (Ctrl+A)
+`{ "action": "press", "keys": ["Meta", "c"] }` — copy (Cmd+C on Mac)
+
 ## Environment Variables
 
 - `SELENOID_DIR` — Path to selenoid source (default: `../selenoid`)

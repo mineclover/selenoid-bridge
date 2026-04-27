@@ -16,7 +16,8 @@ describe("WebDriverClient", () => {
     });
 
     const client = new WebDriverClient("http://selenoid.example");
-    await client.createSession({ browserName: "chrome", browserVersion: "128.0" });
+    // stealth:false isolates capability serialization from Chrome-specific options
+    await client.createSession({ browserName: "chrome", browserVersion: "128.0" }, undefined, false);
 
     const body = JSON.parse(requests[0].body || "{}") as {
       capabilities: { alwaysMatch: Record<string, string> };
@@ -37,7 +38,7 @@ describe("WebDriverClient", () => {
     });
 
     const client = new WebDriverClient("http://selenoid.example");
-    await client.createSession({ browserName: "chrome", browserVersion: "" });
+    await client.createSession({ browserName: "chrome", browserVersion: "" }, undefined, false);
 
     const body = JSON.parse(requests[0].body || "{}") as {
       capabilities: { alwaysMatch: Record<string, string> };
@@ -202,6 +203,146 @@ describe("WebDriverClient", () => {
     expect(JSON.parse(executeRequests[1].body || "{}")).toEqual({
       script: "window.scrollBy(0, arguments[0]);",
       args: [-250],
+    });
+  });
+
+  it("double-clicks by sending two press/release pairs after moving to the element", async () => {
+    const requests: Array<{ url: string; method?: string; body?: string }> = [];
+    vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
+      requests.push({ url, method: init?.method, body: init?.body?.toString() });
+      if (url.endsWith("/session")) {
+        return jsonResponse({ value: { sessionId: "session-1" } });
+      }
+      if (url.endsWith("/element")) {
+        return jsonResponse({ value: { "element-6066-11e4-a52e-4f735466cecf": "btn-1" } });
+      }
+      return jsonResponse({ value: null });
+    });
+
+    const client = new WebDriverClient("http://selenoid.example");
+    await client.createSession({ browserName: "chrome", browserVersion: "128.0" });
+    await client.doubleClick({ css: "#submit", strategy: "id" });
+
+    const actionsRequest = requests.find((r) => r.url.endsWith("/actions"));
+    expect(actionsRequest?.method).toBe("POST");
+    expect(JSON.parse(actionsRequest?.body || "{}")).toEqual({
+      actions: [{
+        type: "pointer",
+        id: "mouse",
+        parameters: { pointerType: "mouse" },
+        actions: [
+          { type: "pointerMove", duration: 0, origin: { "element-6066-11e4-a52e-4f735466cecf": "btn-1" }, x: 0, y: 0 },
+          { type: "pointerDown", button: 0 },
+          { type: "pointerUp",   button: 0 },
+          { type: "pointerDown", button: 0 },
+          { type: "pointerUp",   button: 0 },
+        ],
+      }],
+    });
+  });
+
+  it("right-clicks by sending button:2 down/up after moving to the element", async () => {
+    const requests: Array<{ url: string; method?: string; body?: string }> = [];
+    vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
+      requests.push({ url, method: init?.method, body: init?.body?.toString() });
+      if (url.endsWith("/session")) {
+        return jsonResponse({ value: { sessionId: "session-1" } });
+      }
+      if (url.endsWith("/element")) {
+        return jsonResponse({ value: { "element-6066-11e4-a52e-4f735466cecf": "item-1" } });
+      }
+      return jsonResponse({ value: null });
+    });
+
+    const client = new WebDriverClient("http://selenoid.example");
+    await client.createSession({ browserName: "chrome", browserVersion: "128.0" });
+    await client.rightClick({ css: "#context-target", strategy: "id" });
+
+    const actionsRequest = requests.find((r) => r.url.endsWith("/actions"));
+    expect(actionsRequest?.method).toBe("POST");
+    expect(JSON.parse(actionsRequest?.body || "{}")).toEqual({
+      actions: [{
+        type: "pointer",
+        id: "mouse",
+        parameters: { pointerType: "mouse" },
+        actions: [
+          { type: "pointerMove", duration: 0, origin: { "element-6066-11e4-a52e-4f735466cecf": "item-1" }, x: 0, y: 0 },
+          { type: "pointerDown", button: 2 },
+          { type: "pointerUp",   button: 2 },
+        ],
+      }],
+    });
+  });
+
+  it("sends key actions with modifiers released in reverse order", async () => {
+    const requests: Array<{ url: string; method?: string; body?: string }> = [];
+    vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
+      requests.push({ url, method: init?.method, body: init?.body?.toString() });
+      if (url.endsWith("/session")) {
+        return jsonResponse({ value: { sessionId: "session-1" } });
+      }
+      return jsonResponse({ value: null });
+    });
+
+    const client = new WebDriverClient("http://selenoid.example");
+    await client.createSession({ browserName: "chrome", browserVersion: "128.0" });
+    await client.pressKeys(["Control", "c"]);
+
+    const actionsRequest = requests.find((r) => r.url.endsWith("/actions"));
+    expect(actionsRequest?.method).toBe("POST");
+    expect(JSON.parse(actionsRequest?.body || "{}")).toEqual({
+      actions: [{
+        type: "key",
+        id: "keyboard",
+        actions: [
+          { type: "keyDown", value: "" }, // Control
+          { type: "keyDown", value: "c" },
+          { type: "keyUp",   value: "c" },
+          { type: "keyUp",   value: "" }, // Control (reversed)
+        ],
+      }],
+    });
+  });
+
+  it("uploads a file by posting the zipped base64 content then setting the remote path on the element", async () => {
+    const requests: Array<{ url: string; method?: string; body?: string }> = [];
+    vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
+      requests.push({ url, method: init?.method, body: init?.body?.toString() });
+      if (url.endsWith("/session")) {
+        return jsonResponse({ value: { sessionId: "session-1" } });
+      }
+      if (url.endsWith("/element")) {
+        return jsonResponse({ value: { "element-6066-11e4-a52e-4f735466cecf": "input-1" } });
+      }
+      if (url.endsWith("/file")) {
+        return jsonResponse({ value: "/tmp/remote/test.png" });
+      }
+      return jsonResponse({ value: null });
+    });
+
+    // Write a tiny temp file so readFileSync succeeds
+    const { writeFileSync, unlinkSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const { tmpdir } = await import("node:os");
+    const tmpFile = join(tmpdir(), "test.png");
+    writeFileSync(tmpFile, Buffer.from([0x89, 0x50, 0x4e, 0x47])); // PNG magic bytes
+
+    const client = new WebDriverClient("http://selenoid.example");
+    await client.createSession({ browserName: "chrome", browserVersion: "128.0" });
+    await client.uploadFile({ css: "input[type=file]", strategy: "css-path" }, tmpFile);
+    unlinkSync(tmpFile);
+
+    const fileRequest = requests.find((r) => r.url.endsWith("/file"));
+    expect(fileRequest?.method).toBe("POST");
+    const fileBody = JSON.parse(fileRequest?.body || "{}") as { file: string };
+    expect(typeof fileBody.file).toBe("string");
+    expect(fileBody.file.length).toBeGreaterThan(0);
+
+    const valueRequest = requests.find((r) => r.url.endsWith("/value"));
+    expect(valueRequest?.method).toBe("POST");
+    expect(JSON.parse(valueRequest?.body || "{}")).toEqual({
+      text: "/tmp/remote/test.png",
+      value: [..."/tmp/remote/test.png"],
     });
   });
 });
