@@ -532,8 +532,12 @@ body { background:#0f0f1a; display:flex; justify-content:center; align-items:cen
       const htmlPath = join(splitDir, "index.html");
       writeFileSync(htmlPath, html);
       console.log(`HTML: ${htmlPath}`);
-      const { execSync } = await import("node:child_process");
-      execSync(`open -a "Google Chrome" "${htmlPath}"`);
+      if (process.platform === "darwin") {
+        const { execFile: execFileNode } = await import("node:child_process");
+        execFileNode("open", ["-a", "Google Chrome", htmlPath], (err) => {
+          if (err) console.warn("Could not open Chrome:", err.message);
+        });
+      }
       return;
     }
 
@@ -601,12 +605,13 @@ function collectAssets(dir: string, excludeHtml: string): {
     const names = readdirSync(dir).sort();
     for (const name of names) {
       const fullPath = join(dir, name);
-      if (!statSync(fullPath).isFile()) continue;
+      const st = statSync(fullPath);
+      if (!st.isFile()) continue;
       const ext = extname(name).toLowerCase();
 
       // Asset file — B: size check
       if (ASSET_EXTS.has(ext) && fullPath !== excludeHtml) {
-        const size = statSync(fullPath).size;
+        const size = st.size;
         if (size > FILE_LIMIT_BYTES) {
           console.warn(`  SKIP "${name}" (${Math.round(size/1024/1024)}MB > 20MB limit) — split into grid or sequence`);
           continue;
