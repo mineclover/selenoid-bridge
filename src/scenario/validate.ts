@@ -36,7 +36,7 @@ function validateStep(step: unknown, index: number): void {
   }
 
   const s = step as Record<string, unknown>;
-  const validActions = ["goto", "click", "fill", "select", "check", "hover", "scroll", "press", "wait", "assert", "record", "measure"];
+  const validActions = ["goto", "click", "double-click", "right-click", "fill", "select", "check", "hover", "scroll", "press", "wait", "assert", "record", "measure", "upload"];
 
   if (!validActions.includes(s.action as string)) {
     throw new Error(`Step ${index}: invalid action "${s.action}"`);
@@ -63,9 +63,17 @@ function validateStep(step: unknown, index: number): void {
       throw new Error(`Step ${index}: scroll amount must be a positive number`);
     }
   }
-  if (["click", "fill", "select", "check", "hover"].includes(s.action as string) && !s.selector) {
+  if (["click", "double-click", "right-click", "fill", "select", "check", "hover", "upload"].includes(s.action as string) && !s.selector) {
     if (typeof s.selectorKey !== "string" || !s.selectorKey) {
       throw new Error(`Step ${index}: ${s.action} requires selector or selectorKey`);
+    }
+  }
+  if (s.action === "upload" && typeof s.filePath !== "string") {
+    throw new Error(`Step ${index}: upload requires filePath`);
+  }
+  if (s.action === "press" && s.keys !== undefined) {
+    if (!Array.isArray(s.keys) || s.keys.some((k: unknown) => typeof k !== "string")) {
+      throw new Error(`Step ${index}: press keys must be an array of strings`);
     }
   }
   if (s.name !== undefined && typeof s.name !== "string") {
