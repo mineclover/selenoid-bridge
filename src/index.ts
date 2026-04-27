@@ -525,7 +525,7 @@ program
         });
         const sResult = await sRes.json() as { success: boolean; error?: string; outputToken?: string; fileSize?: number; durationMs?: number };
         if (!sResult.success || !sResult.outputToken) {
-          console.error(`  Layer ${layer.name} failed: ${sResult.error}`); process.exit(1);
+          throw new Error(`Layer ${layer.name} failed: ${sResult.error}`);
         }
         const dl = await fetch(`${rendererUrl}/outputs/${sResult.outputToken}`);
         const layerPath = join(splitDir, layer.name.replace(/\.\w+$/, "") + ".webp");

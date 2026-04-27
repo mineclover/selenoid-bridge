@@ -288,6 +288,8 @@ async function executeStep(
         },
       };
     }
+    default:
+      throw new Error(`Unknown step action: "${(step as { action: string }).action}"`);
   }
   return undefined;
 }
