@@ -3,7 +3,11 @@
 import { mkdirSync, readFileSync, writeFileSync, readdirSync, statSync } from "node:fs";
 import { join, resolve, basename, extname, dirname } from "node:path";
 import { deflateSync } from "node:zlib";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { Command } from "commander";
+
+const execFileAsync = promisify(execFile);
 import { parseBrowserTargets, parseCaptureMode, parsePositiveInteger } from "./cli/options.js";
 import { printReport, toHtmlReport, toJsonReport } from "./runner/report.js";
 import { runParallel } from "./runner/runner.js";
@@ -29,6 +33,7 @@ program
   .option("--concurrency <count>", "Max parallel browser runs", "5")
   .option("--request-timeout <ms>", "WebDriver request timeout in milliseconds", "30000")
   .option("--enable-video", "Record session video via Selenoid and download after run")
+  .option("--extension <paths>", "Comma-separated container-side extension paths to load via --load-extension")
   .action(async (scenarioPath: string, opts: {
     selenoid: string;
     browsers: string;
@@ -38,6 +43,7 @@ program
     concurrency: string;
     requestTimeout: string;
     enableVideo?: boolean;
+    extension?: string;
   }) => {
     let capture: "all" | "failure" | "off";
     let concurrency: number;
@@ -61,12 +67,17 @@ program
     );
     mkdirSync(artifactsDir, { recursive: true });
 
+    const extensions = opts.extension ? opts.extension.split(",").map(p => p.trim()).filter(Boolean) : undefined;
+
     console.log(`Running "${scenario.name}" on ${browsers.length} browser(s)...`);
     console.log(`Selenoid: ${opts.selenoid}`);
     console.log(`Artifacts: ${artifactsDir}`);
 
     if (opts.enableVideo) {
       console.log("Video recording: enabled");
+    }
+    if (extensions?.length) {
+      console.log(`Extensions: ${extensions.join(", ")}`);
     }
 
     const results = await runParallel(opts.selenoid, scenario, browsers, {
@@ -75,6 +86,7 @@ program
       concurrency,
       requestTimeoutMs,
       enableVideo: opts.enableVideo ?? false,
+      extensions,
     });
 
     printReport(results);
@@ -162,10 +174,18 @@ program
       process.exit(1);
     }
 
-    // Resolve source to html string or previewUrl
+    // Resolve source to html string
     let body: Record<string, unknown>;
     if (source.startsWith("http://") || source.startsWith("https://")) {
-      body = { previewUrl: source };
+      try {
+        const htmlRes = await fetch(source, { signal: AbortSignal.timeout(30_000) });
+        if (!htmlRes.ok) throw new Error(`HTTP ${htmlRes.status}`);
+        body = { html: await htmlRes.text() };
+        console.log(`Fetched ${source} (${(body.html as string).length} chars)`);
+      } catch (e) {
+        console.error(`Failed to fetch ${source}: ${e instanceof Error ? e.message : e}`);
+        process.exit(1);
+      }
     } else {
       const htmlPath = resolve(source);
       body = { html: readFileSync(htmlPath, "utf-8") };
@@ -489,13 +509,11 @@ program
       const splitDir = resolve(opts.split);
       mkdirSync(splitDir, { recursive: true });
 
-      // layer 0 is background — skip it; render each shape layer separately
+      // layer 0 is background — skip it; render each shape layer separately (in parallel)
       const shapeLayers = layerDefs.slice(1);
-      const webpFiles: string[] = [];
+      console.log(`Rendering ${shapeLayers.length} layers in parallel...`);
 
-      for (let i = 0; i < shapeLayers.length; i++) {
-        const layer = shapeLayers[i];
-        console.log(`  [${i + 1}/${shapeLayers.length}] rendering ${layer.name}...`);
+      const webpFiles = await Promise.all(shapeLayers.map(async (layer, i) => {
         const sBody = {
           layers: [layer], fps, width: canvasW, height: canvasH,
           ...(duration ? { duration } : {}),
@@ -512,9 +530,9 @@ program
         const dl = await fetch(`${rendererUrl}/outputs/${sResult.outputToken}`);
         const layerPath = join(splitDir, layer.name.replace(/\.\w+$/, "") + ".webp");
         writeFileSync(layerPath, Buffer.from(await dl.arrayBuffer()));
-        console.log(`  Saved: ${layerPath} (${Math.round((sResult.fileSize ?? 0) / 1024)}KB, ${((sResult.durationMs ?? 0) / 1000).toFixed(1)}s)`);
-        webpFiles.push(layerPath);
-      }
+        console.log(`  [${i + 1}/${shapeLayers.length}] ${layer.name}: ${Math.round((sResult.fileSize ?? 0) / 1024)}KB, ${((sResult.durationMs ?? 0) / 1000).toFixed(1)}s`);
+        return layerPath;
+      }));
 
       // Generate HTML compositor page
       const layers = webpFiles.map(f => basename(f));
@@ -580,6 +598,300 @@ body { background:#0f0f1a; display:flex; justify-content:center; align-items:cen
     const kb   = Math.round((result.fileSize ?? 0) / 1024);
     console.log(`Saved: ${outPath} (${kb}KB, rendered in ${secs}s)`);
   });
+
+// ─── sprite-grid command ──────────────────────────────────────────────────────
+
+program
+  .command("sprite-grid")
+  .description("Generate a visual frame grid HTML viewer for a sprite sheet")
+  .argument("<image>", "Path to sprite sheet image (PNG, JPEG, WebP)")
+  .option("--cols <n>", "Number of columns", "4")
+  .option("--rows <n>", "Number of rows", "2")
+  .option("--frame-width <n>",  "Frame width px (auto-computed from image/cols if omitted)")
+  .option("--frame-height <n>", "Frame height px (auto-computed from image/rows if omitted)")
+  .option("-o, --output <file>", "Output path (default: <image>.grid.html or .grid.png)")
+  .option("--export-png", "Export a transparent PNG grid overlay instead of HTML viewer")
+  .action(async (imagePath: string, opts: {
+    cols: string; rows: string;
+    frameWidth?: string; frameHeight?: string;
+    output?: string;
+    exportPng?: boolean;
+  }) => {
+    const imgPath = resolve(imagePath);
+    const imgBuf  = readFileSync(imgPath);
+    const ext     = extname(imgPath).slice(1).toLowerCase();
+
+    // ── Dimension detection ──
+    let imgW = 0, imgH = 0;
+    if (ext === "png" && imgBuf.length >= 24 && imgBuf[0] === 0x89 && imgBuf[1] === 0x50) {
+      imgW = imgBuf.readUInt32BE(16);
+      imgH = imgBuf.readUInt32BE(20);
+    } else {
+      const { execFile: execFileNode } = await import("node:child_process");
+      const out = await new Promise<string>((res, rej) =>
+        execFileNode("magick", ["identify", "-format", "%w %h", imgPath], (e, s) => e ? rej(e) : res(s))
+      );
+      [imgW, imgH] = out.trim().split(" ").map(Number);
+    }
+    if (!imgW || !imgH) { console.error("Could not read image dimensions"); process.exit(1); }
+
+    const cols = parseInt(opts.cols, 10);
+    const rows = parseInt(opts.rows, 10);
+    const fw   = opts.frameWidth  ? parseInt(opts.frameWidth, 10)  : Math.floor(imgW / cols);
+    const fh   = opts.frameHeight ? parseInt(opts.frameHeight, 10) : Math.floor(imgH / rows);
+
+    const name = basename(imgPath);
+    console.log(`  ${cols}×${rows} = ${cols * rows} frames · image ${imgW}×${imgH}px · frame ${fw}×${fh}px`);
+
+    if (opts.exportPng) {
+      const outPath = resolve(opts.output ?? imgPath.replace(/\.\w+$/, "") + ".grid.png");
+      await exportGridPng({ imgW, imgH, cols, rows, fw, fh, outPath });
+      console.log(`Grid PNG: ${outPath}`);
+      if (process.platform === "darwin") {
+        const { execFile: ef } = await import("node:child_process");
+        ef("open", [outPath], () => {});
+      }
+      return;
+    }
+
+    const mime    = ext === "jpg" || ext === "jpeg" ? "image/jpeg" : ext === "webp" ? "image/webp" : "image/png";
+    const dataUrl = `data:${mime};base64,${imgBuf.toString("base64")}`;
+    const outPath = resolve(opts.output ?? imgPath.replace(/\.\w+$/, "") + ".grid.html");
+    writeFileSync(outPath, buildGridHtml({ name, dataUrl, imgW, imgH, cols, rows, fw, fh }));
+    console.log(`Grid viewer: ${outPath}`);
+
+    if (process.platform === "darwin") {
+      const { execFile: ef } = await import("node:child_process");
+      ef("open", ["-a", "Google Chrome", outPath], (err) => {
+        if (err) console.warn("Could not open Chrome:", err.message);
+      });
+    }
+  });
+
+async function exportGridPng(p: {
+  imgW: number; imgH: number;
+  cols: number; rows: number;
+  fw: number; fh: number;
+  outPath: string;
+}): Promise<void> {
+  const { cols, rows, fw, fh, imgW, imgH, outPath } = p;
+  const draw: string[] = [];
+
+  // Helper: pixel x of column divider c (last one snaps to imgW-1)
+  const cx = (c: number) => c === cols ? imgW - 1 : Math.round(c * imgW / cols);
+  const ry = (r: number) => r === rows ? imgH - 1 : Math.round(r * imgH / rows);
+
+  // Grid lines (red) — full extent to image edges
+  draw.push("-stroke", "rgba(239,68,68,0.9)", "-strokewidth", "1", "-fill", "none");
+  for (let c = 0; c <= cols; c++) draw.push("-draw", `line ${cx(c)},0 ${cx(c)},${imgH-1}`);
+  for (let r = 0; r <= rows; r++) draw.push("-draw", `line 0,${ry(r)} ${imgW-1},${ry(r)}`);
+
+  // Center crosshairs (blue)
+  draw.push("-stroke", "rgba(96,165,250,0.6)", "-strokewidth", "1");
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const mx = Math.round((cx(c) + cx(c+1)) / 2);
+      const my = Math.round((ry(r) + ry(r+1)) / 2);
+      draw.push("-draw", `line ${mx-10},${my} ${mx+10},${my}`);
+      draw.push("-draw", `line ${mx},${my-10} ${mx},${my+10}`);
+    }
+  }
+
+  // Frame index labels (yellow with black shadow)
+  const fs = Math.max(12, Math.min(20, Math.floor(fw / 4)));
+  draw.push("-fill", "rgba(0,0,0,0.6)", "-stroke", "none",
+    "-font", "Helvetica-Bold", "-pointsize", String(fs));
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const fi = r * cols + c;
+      draw.push("-draw", `text ${cx(c)+6},${ry(r)+fs+3} '#${fi}'`);
+    }
+  }
+  draw.push("-fill", "rgba(253,224,71,0.95)");
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const fi = r * cols + c;
+      draw.push("-draw", `text ${cx(c)+5},${ry(r)+fs+2} '#${fi}'`);
+    }
+  }
+
+  // Col,row coordinates (cyan)
+  const cs = Math.max(9, Math.min(13, Math.floor(fw / 6)));
+  draw.push("-fill", "rgba(103,232,249,0.9)", "-pointsize", String(cs));
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      draw.push("-draw", `text ${cx(c)+5},${ry(r)+fs+cs+6} '${c},${r}'`);
+    }
+  }
+
+  await execFileAsync("magick", [
+    "-size", `${imgW}x${imgH}`, "xc:none",
+    ...draw,
+    outPath,
+  ]);
+}
+
+function buildGridHtml(p: {
+  name: string; dataUrl: string;
+  imgW: number; imgH: number;
+  cols: number; rows: number;
+  fw: number; fh: number;
+}): string {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Sprite Grid — ${p.name}</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #111827; color: #e5e7eb; font-family: monospace; font-size: 13px; padding: 20px; }
+  h1 { font-size: 13px; color: #9ca3af; margin-bottom: 6px; }
+  .meta { color: #6b7280; font-size: 11px; margin-bottom: 12px; }
+  .controls { display: flex; flex-wrap: wrap; gap: 16px; align-items: center; margin-bottom: 14px; }
+  .controls label { display: flex; align-items: center; gap: 6px; cursor: pointer; color: #d1d5db; }
+  .controls input[type=range] { width: 100px; }
+  .scale-val { color: #60a5fa; min-width: 28px; }
+  .viewer { display: inline-block; border: 1px solid #374151; background: #000; }
+  canvas { display: block; cursor: crosshair; image-rendering: pixelated; }
+  .status { margin-top: 8px; font-size: 11px; color: #6b7280; min-height: 16px; }
+  .frame-table { margin-top: 16px; border-collapse: collapse; font-size: 11px; }
+  .frame-table th, .frame-table td { border: 1px solid #374151; padding: 3px 8px; text-align: center; }
+  .frame-table th { background: #1f2937; color: #9ca3af; }
+  .frame-table td { color: #d1d5db; }
+  .frame-table tr:hover td { background: #1f2937; }
+</style>
+</head>
+<body>
+<h1>Sprite Grid — ${p.name}</h1>
+<div class="meta">${p.cols}×${p.rows} = ${p.cols * p.rows} frames &nbsp;·&nbsp; image ${p.imgW}×${p.imgH}px &nbsp;·&nbsp; frame ${p.fw}×${p.fh}px</div>
+<div class="controls">
+  <label>Scale <input type="range" id="scaleR" min="1" max="8" value="2"> <span class="scale-val" id="scaleV">2×</span></label>
+  <label><input type="checkbox" id="chkIdx" checked> Frame index</label>
+  <label><input type="checkbox" id="chkDim"> Dimensions</label>
+  <label><input type="checkbox" id="chkCross" checked> Center mark</label>
+</div>
+<div class="viewer"><canvas id="c"></canvas></div>
+<div class="status" id="status">Hover over a frame to see its info.</div>
+<table class="frame-table" id="tbl">
+<thead><tr><th>#</th><th>col</th><th>row</th><th>x (px)</th><th>y (px)</th><th>size</th></tr></thead>
+<tbody id="tbody"></tbody>
+</table>
+<script>
+const IMG_SRC = ${JSON.stringify(p.dataUrl)};
+const COLS=${p.cols}, ROWS=${p.rows}, FW=${p.fw}, FH=${p.fh};
+const IMG_W=${p.imgW}, IMG_H=${p.imgH};
+
+const img = new Image();
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+
+let scale = 2;
+
+function draw() {
+  const w = IMG_W * scale, h = IMG_H * scale;
+  canvas.width = w; canvas.height = h;
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(img, 0, 0, w, h);
+
+  const fw = FW * scale, fh = FH * scale;
+  const showIdx   = document.getElementById('chkIdx').checked;
+  const showDim   = document.getElementById('chkDim').checked;
+  const showCross = document.getElementById('chkCross').checked;
+
+  // Grid lines
+  ctx.strokeStyle = 'rgba(239,68,68,0.9)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (let c = 0; c <= COLS; c++) { ctx.moveTo(c*fw+0.5, 0); ctx.lineTo(c*fw+0.5, ROWS*fh); }
+  for (let r = 0; r <= ROWS; r++) { ctx.moveTo(0, r*fh+0.5); ctx.lineTo(COLS*fw, r*fh+0.5); }
+  ctx.stroke();
+
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      const fi = r * COLS + c;
+      const ox = c * fw, oy = r * fh;
+
+      // Center crosshair
+      if (showCross) {
+        const cx = ox + fw/2, cy = oy + fh/2;
+        ctx.strokeStyle = 'rgba(96,165,250,0.5)';
+        ctx.setLineDash([2,3]);
+        ctx.beginPath();
+        ctx.moveTo(cx-8,cy); ctx.lineTo(cx+8,cy);
+        ctx.moveTo(cx,cy-8); ctx.lineTo(cx,cy+8);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+
+      const fs = Math.max(9, Math.min(16, fw/5));
+      ctx.font = 'bold '+fs+'px monospace';
+
+      // Frame index
+      if (showIdx) {
+        ctx.fillStyle = 'rgba(0,0,0,0.55)';
+        ctx.fillText('#'+fi, ox+5, oy+fs+2);
+        ctx.fillStyle = '#fde047';
+        ctx.fillText('#'+fi, ox+4, oy+fs+1);
+      }
+
+      // Dimensions
+      if (showDim) {
+        const ds = Math.max(8, Math.min(11, fw/7));
+        const dimTxt = FW+'×'+FH;
+        ctx.font = ds+'px monospace';
+        ctx.fillStyle = 'rgba(0,0,0,0.5)';
+        ctx.fillText(dimTxt, ox+5, oy+fs*2+4);
+        ctx.fillStyle = '#67e8f9';
+        ctx.fillText(dimTxt, ox+4, oy+fs*2+3);
+      }
+    }
+  }
+}
+
+// Build frame table
+const tbody = document.getElementById('tbody');
+for (let r = 0; r < ROWS; r++) {
+  for (let c = 0; c < COLS; c++) {
+    const fi = r * COLS + c;
+    const tr = document.createElement('tr');
+    tr.id = 'fr'+fi;
+    tr.innerHTML = '<td>#'+fi+'</td><td>'+c+'</td><td>'+r+'</td><td>'+(c*FW)+'</td><td>'+(r*FH)+'</td><td>'+FW+'×'+FH+'</td>';
+    tbody.appendChild(tr);
+  }
+}
+
+img.onload = draw;
+img.src = IMG_SRC;
+
+document.getElementById('scaleR').addEventListener('input', e => {
+  scale = +e.target.value;
+  document.getElementById('scaleV').textContent = scale+'×';
+  draw();
+});
+['chkIdx','chkDim','chkCross'].forEach(id => document.getElementById(id).addEventListener('change', draw));
+
+canvas.addEventListener('mousemove', e => {
+  const r = canvas.getBoundingClientRect();
+  const mx = e.clientX - r.left, my = e.clientY - r.top;
+  const fw = FW*scale, fh = FH*scale;
+  const col = Math.floor(mx/fw), row = Math.floor(my/fh);
+  if (col>=0 && col<COLS && row>=0 && row<ROWS) {
+    const fi = row*COLS+col;
+    document.getElementById('status').textContent =
+      'Frame #'+fi+' · col='+col+' row='+row+' · offset ('+col*FW+', '+row*FH+')px';
+    document.querySelectorAll('.frame-table tr').forEach(t => t.style.background='');
+    const fr = document.getElementById('fr'+fi);
+    if (fr) fr.style.background = '#1e3a5f';
+  }
+});
+canvas.addEventListener('mouseleave', () => {
+  document.getElementById('status').textContent = 'Hover over a frame to see its info.';
+  document.querySelectorAll('.frame-table tr').forEach(t => t.style.background='');
+});
+</script>
+</body>
+</html>`;
+}
 
 program.parse();
 

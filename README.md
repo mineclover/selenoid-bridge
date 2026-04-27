@@ -162,6 +162,105 @@ docker pull selenoid/chrome:128.0
 pkill -HUP -f selenoid-test
 ```
 
+## render (HTML → video)
+
+`window.__hf = { duration, seek(t) }` 인터페이스를 구현한 HTML 파일이나 URL을 렌더러 서버로 보내 animated WebP/MP4를 생성합니다.
+
+```bash
+node dist/index.js render ./animation.html \
+  --renderer http://localhost:9847 \
+  --format webp \
+  --fps 30 \
+  --quality high
+```
+
+### 옵션
+
+| 옵션 | 기본값 | 설명 |
+|---|---|---|
+| `<source>` | — | HTML 파일 경로 또는 `http(s)://` URL |
+| `--renderer` | `http://localhost:9847` | 렌더러 서버 URL |
+| `--format` | `mp4` | `mp4` \| `webm` \| `webp` |
+| `--fps` | `30` | 프레임 레이트 |
+| `--quality` | `standard` | `draft` \| `standard` \| `high` |
+| `--width` | `1280` | 뷰포트 가로 |
+| `--height` | `720` | 뷰포트 세로 |
+| `--files` | HTML과 같은 디렉토리 | 에셋 디렉토리 (기본: HTML 파일 위치) |
+| `--output` | `<name>.<format>` | 출력 파일 경로 |
+
+**에셋 자동 포함**: HTML 파일 경로 지정 시, 같은 디렉토리의 `.png`, `.jpg`, `.webp`, `.gif`, `.avif`, `.css`, `.js`, `.woff2` 파일을 base64로 묶어 렌더러에 전송합니다.
+
+**에셋 사이드카**: `sprite.png.meta.json` 파일로 스프라이트 메타를 지정합니다.
+```json
+{ "frameWidth": 120, "frameHeight": 120, "rows": 1 }
+```
+
+**URL 입력 제약**: URL 입력 시 HTML만 fetch하고 외부 에셋은 포함하지 않습니다. `window.__hf`와 모든 에셋이 인라인된 자기 완결형 페이지에서만 정상 동작합니다.
+
+## render-sprites
+
+스프라이트 레이어를 투명 애니메이션 WebP로 합성합니다. `packages/renderer` 렌더러 서버가 Docker로 실행 중이어야 합니다.
+
+```bash
+# 내장 테스트 레이어(배경 + 속이 빈 사각형·링·다이아몬드) 합성
+node dist/index.js render-sprites --test
+
+# 레이어별 개별 WebP + HTML 컴포지터 생성
+node dist/index.js render-sprites --test --split ./output
+```
+
+### 옵션
+
+| 옵션 | 기본값 | 설명 |
+|---|---|---|
+| `--test` | — | 내장 테스트 스프라이트 사용 |
+| `--split <dir>` | — | 레이어별 개별 WebP 병렬 렌더링 + HTML 컴포지터 출력 |
+| `--format` | `webp` | 출력 포맷: `webp` \| `mp4` \| `gif` |
+| `--transparent` | `false` | 배경 투명 (animated WebP 알파) |
+| `--fps` | `30` | 프레임 레이트 |
+| `--duration` | `3` | 애니메이션 길이(초) |
+| `--width` | `800` | 출력 가로 픽셀 |
+| `--height` | `600` | 출력 세로 픽셀 |
+| `--quality` | `80` | WebP/GIF 품질 (0–100) |
+
+### 내장 테스트 레이어
+
+`--test` 모드는 다음 5개 레이어를 생성합니다.
+
+- **background** — 딥 컬러 4프레임 루핑 배경
+- **rect** — 속이 빈 사각형 (120×120), 시계 방향 공전, t×1.0
+- **ring** — 속이 빈 링 (150×150), 반시계 방향 공전, t×1.4, 60° 위상차
+- **diamond** — 속이 빈 다이아몬드 (100×100), t×1.9, 120° 위상차
+- **rect2** — 소형 사각형 (90×90), 반시계 방향, t×2.5, 180° 위상차
+
+모든 도형은 같은 궤도 반경 `(W - overlay_W) * 0.38`으로 공전해 경로가 교차합니다. `--split` 시 4개 도형 레이어만 별도 WebP로 렌더링됩니다(배경 레이어 제외).
+
+### 스프라이트 레이어 형식
+
+렌더러 API(`POST /render/sprites`)로 직접 호출할 때의 레이어 형식:
+
+```json
+{
+  "layers": [
+    {
+      "url": "http://host/sprite.webp",
+      "xExpr": "(main_w - overlay_w) * 0.5 + (main_w - overlay_w) * 0.38 * cos(t * 1.2)",
+      "yExpr": "(main_h - overlay_h) * 0.5 + (main_h - overlay_h) * 0.38 * sin(t * 1.2)",
+      "transparent": true
+    }
+  ],
+  "fps": 30,
+  "duration": 3,
+  "width": 800,
+  "height": 600,
+  "format": "webp",
+  "transparent": true
+}
+```
+
+`xExpr` / `yExpr`는 FFmpeg 스타일 산술 표현식으로, 사용 가능한 변수:
+`main_w`, `main_h`, `overlay_w`, `overlay_h`, `t`, `cos`, `sin`, `PI`
+
 ## Capture Control From The Runner
 
 `--selenoid` 는 원격으로 실행 가능한 브라우저 엔진 주소입니다. 따라서 캡처 정책은 Selenoid 서버 설정에 고정하지 않고, 실행하는 쪽에서 `run` 옵션으로 켜고 끌 수 있어야 합니다.
