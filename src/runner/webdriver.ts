@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { basename } from "node:path";
+import { deflateRawSync } from "node:zlib";
 import type { Selector, BrowserTarget } from "../scenario/types.js";
 
 export interface WebDriverClientOptions {
@@ -180,6 +183,36 @@ export class WebDriverClient {
     await this.request("POST", `/wd/hub/session/${this.sessionId}/element/${elementId}/click`);
   }
 
+  async doubleClick(selector: Selector): Promise<void> {
+    const elementId = await this.findElement(selector);
+    await this.request("POST", `/wd/hub/session/${this.sessionId}/actions`, {
+      actions: [{
+        type: "pointer", id: "mouse", parameters: { pointerType: "mouse" },
+        actions: [
+          { type: "pointerMove", duration: 0, origin: this.elementReference(elementId), x: 0, y: 0 },
+          { type: "pointerDown", button: 0 },
+          { type: "pointerUp",   button: 0 },
+          { type: "pointerDown", button: 0 },
+          { type: "pointerUp",   button: 0 },
+        ],
+      }],
+    });
+  }
+
+  async rightClick(selector: Selector): Promise<void> {
+    const elementId = await this.findElement(selector);
+    await this.request("POST", `/wd/hub/session/${this.sessionId}/actions`, {
+      actions: [{
+        type: "pointer", id: "mouse", parameters: { pointerType: "mouse" },
+        actions: [
+          { type: "pointerMove", duration: 0, origin: this.elementReference(elementId), x: 0, y: 0 },
+          { type: "pointerDown", button: 2 },
+          { type: "pointerUp",   button: 2 },
+        ],
+      }],
+    });
+  }
+
   async hover(selector: Selector): Promise<void> {
     const elementId = await this.findElement(selector);
     await this.request("POST", `/wd/hub/session/${this.sessionId}/actions`, {
@@ -280,15 +313,45 @@ export class WebDriverClient {
   }
 
   async pressKey(key: string): Promise<void> {
+    await this.pressKeys([key]);
+  }
+
+  async pressKeys(keys: string[]): Promise<void> {
+    const mapped = keys.map(mapKey);
     await this.request("POST", `/wd/hub/session/${this.sessionId}/actions`, {
       actions: [{
         type: "key",
         id: "keyboard",
         actions: [
-          { type: "keyDown", value: mapKey(key) },
-          { type: "keyUp", value: mapKey(key) },
+          ...mapped.map(v => ({ type: "keyDown", value: v })),
+          ...[...mapped].reverse().map(v => ({ type: "keyUp", value: v })),
         ],
       }],
+    });
+  }
+
+  // Upload a local file to an <input type="file"> element.
+  // Uses the Selenium remote file upload protocol (POST /session/:id/file)
+  // which packages the file as a ZIP before sending to the browser container.
+  async uploadFile(selector: Selector, localFilePath: string): Promise<void> {
+    const data     = readFileSync(localFilePath);
+    const filename = basename(localFilePath);
+    const zipBuf   = packZip(filename, data);
+    const b64      = zipBuf.toString("base64");
+
+    let remotePath: string;
+    try {
+      remotePath = await this.request(
+        "POST", `/wd/hub/session/${this.sessionId}/file`, { file: b64 }
+      ) as string;
+    } catch {
+      // Fall back to local path (works when browser runs on the same machine)
+      remotePath = localFilePath;
+    }
+
+    const elementId = await this.findElement(selector);
+    await this.request("POST", `/wd/hub/session/${this.sessionId}/element/${elementId}/value`, {
+      text: remotePath, value: [...remotePath],
     });
   }
 
@@ -328,17 +391,80 @@ export class WebDriverClient {
 
 function mapKey(key: string): string {
   const keyMap: Record<string, string> = {
-    Enter: "\uE007",
-    Tab: "\uE004",
-    Escape: "\uE00C",
+    Enter:     "\uE007",
+    Tab:       "\uE004",
+    Escape:    "\uE00C",
     Backspace: "\uE003",
-    Delete: "\uE017",
-    ArrowUp: "\uE013",
+    Delete:    "\uE017",
+    ArrowUp:   "\uE013",
     ArrowDown: "\uE015",
     ArrowLeft: "\uE012",
-    ArrowRight: "\uE014",
+    ArrowRight:"\uE014",
+    Control:   "\uE009",
+    Shift:     "\uE008",
+    Alt:       "\uE00A",
+    Meta:      "\uE03D",
+    Command:   "\uE03D",
+    Home:      "\uE011",
+    End:       "\uE010",
+    PageUp:    "\uE00F",
+    PageDown:  "\uE00E",
+    F5:        "\uE035",
   };
-  return keyMap[key] || key;
+  return keyMap[key] ?? key;
+}
+
+// Minimal single-file ZIP builder for Selenium remote file upload protocol.
+function packZip(filename: string, data: Buffer): Buffer {
+  const fnBuf   = Buffer.from(filename, 'utf8');
+  const comp    = deflateRawSync(data);
+  const crc     = crc32buf(data);
+  const now     = new Date();
+  const dosTime = (now.getHours() << 11) | (now.getMinutes() << 5) | (now.getSeconds() >> 1);
+  const dosDate = ((now.getFullYear() - 1980) << 9) | ((now.getMonth() + 1) << 5) | now.getDate();
+
+  const lfh = Buffer.alloc(30 + fnBuf.length);
+  lfh.writeUInt32LE(0x04034b50, 0);
+  lfh.writeUInt16LE(20, 4); lfh.writeUInt16LE(0, 6); lfh.writeUInt16LE(8, 8);
+  lfh.writeUInt16LE(dosTime, 10); lfh.writeUInt16LE(dosDate, 12);
+  lfh.writeUInt32LE(crc, 14); lfh.writeUInt32LE(comp.length, 18); lfh.writeUInt32LE(data.length, 22);
+  lfh.writeUInt16LE(fnBuf.length, 26); lfh.writeUInt16LE(0, 28);
+  fnBuf.copy(lfh, 30);
+
+  const cdh = Buffer.alloc(46 + fnBuf.length);
+  cdh.writeUInt32LE(0x02014b50, 0);
+  cdh.writeUInt16LE(20, 4); cdh.writeUInt16LE(20, 6); cdh.writeUInt16LE(0, 8); cdh.writeUInt16LE(8, 10);
+  cdh.writeUInt16LE(dosTime, 12); cdh.writeUInt16LE(dosDate, 14);
+  cdh.writeUInt32LE(crc, 16); cdh.writeUInt32LE(comp.length, 20); cdh.writeUInt32LE(data.length, 24);
+  cdh.writeUInt16LE(fnBuf.length, 28);
+  cdh.writeUInt16LE(0, 30); cdh.writeUInt16LE(0, 32); cdh.writeUInt16LE(0, 34);
+  cdh.writeUInt16LE(0, 36); cdh.writeUInt32LE(0, 38); cdh.writeUInt32LE(0, 42);
+  fnBuf.copy(cdh, 46);
+
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0);
+  eocd.writeUInt16LE(0, 4); eocd.writeUInt16LE(0, 6);
+  eocd.writeUInt16LE(1, 8); eocd.writeUInt16LE(1, 10);
+  eocd.writeUInt32LE(cdh.length, 12); eocd.writeUInt32LE(lfh.length + comp.length, 16);
+  eocd.writeUInt16LE(0, 20);
+
+  return Buffer.concat([lfh, comp, cdh, eocd]);
+}
+
+const CRC32_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let i = 0; i < 256; i++) {
+    let c = i;
+    for (let j = 0; j < 8; j++) c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+    t[i] = c;
+  }
+  return t;
+})();
+
+function crc32buf(buf: Buffer): number {
+  let crc = 0xffffffff;
+  for (let i = 0; i < buf.length; i++) crc = CRC32_TABLE[(crc ^ buf[i]) & 0xff] ^ (crc >>> 8);
+  return (crc ^ 0xffffffff) >>> 0;
 }
 
 function quoteCssAttributeValue(value: string): string {

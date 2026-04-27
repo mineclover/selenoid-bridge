@@ -4,7 +4,7 @@ export interface Selector {
   strategy: "data-testid" | "id" | "aria-label" | "role-name" | "text" | "css-path";
 }
 
-export type StepAction = "goto" | "click" | "fill" | "select" | "check" | "hover" | "scroll" | "press" | "wait" | "assert" | "record" | "measure";
+export type StepAction = "goto" | "click" | "double-click" | "right-click" | "fill" | "select" | "check" | "hover" | "scroll" | "press" | "wait" | "assert" | "record" | "measure" | "upload";
 export type CapturePreference = "always" | "failure" | "off";
 
 export interface StepMeta {
@@ -22,8 +22,14 @@ export interface GotoStep {
 }
 
 export interface ElementStep {
-  action: "click" | "hover" | "check";
+  action: "click" | "double-click" | "right-click" | "hover" | "check";
   selector?: Selector;
+}
+
+export interface UploadStep {
+  action: "upload";
+  selector?: Selector;
+  filePath: string;  // local path to the file to upload
 }
 
 export interface FillStep {
@@ -40,7 +46,8 @@ export interface SelectStep {
 
 export interface PressStep {
   action: "press";
-  key: string;
+  key: string;         // single key name (e.g. "Enter")
+  keys?: string[];     // modifier combo (e.g. ["Control","c"] for Ctrl+C; overrides key when present)
 }
 
 export interface ScrollStep {
@@ -87,7 +94,8 @@ export type Step =
   | (StepMeta & WaitStep)
   | (StepMeta & AssertStep)
   | (StepMeta & RecordStep)
-  | (StepMeta & MeasureStep);
+  | (StepMeta & MeasureStep)
+  | (StepMeta & UploadStep);
 
 export interface ScenarioJourney {
   actor?: string;

@@ -187,6 +187,14 @@ async function executeStep(
       await client.click(resolveSelectorForStep(step, selectors, "click"));
       break;
 
+    case "double-click":
+      await client.doubleClick(resolveSelectorForStep(step, selectors, "double-click"));
+      break;
+
+    case "right-click":
+      await client.rightClick(resolveSelectorForStep(step, selectors, "right-click"));
+      break;
+
     case "fill":
       await client.fill(resolveSelectorForStep(step, selectors, "fill"), step.value);
       break;
@@ -213,7 +221,11 @@ async function executeStep(
       break;
 
     case "press":
-      await client.pressKey(step.key);
+      if (step.keys && step.keys.length > 0) {
+        await client.pressKeys(step.keys);
+      } else {
+        await client.pressKey(step.key);
+      }
       break;
 
     case "wait":
@@ -224,6 +236,10 @@ async function executeStep(
       } else {
         await sleep(step.ms || 1000);
       }
+      break;
+
+    case "upload":
+      await client.uploadFile(resolveSelectorForStep(step, selectors, "upload"), step.filePath);
       break;
 
     case "assert":
