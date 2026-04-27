@@ -382,13 +382,15 @@ program
   .option("--width <n>", "Canvas width", "1280")
   .option("--height <n>", "Canvas height", "720")
   .option("--quality <q>", "draft | standard | high", "standard")
-  .option("--transparent", "No background, VP9 WebM output with alpha channel preserved")
-  .option("-o, --output <file>", "Output file (default: sprites.mp4 or sprites.webm if --transparent)")
+  .option("--format <f>", "mp4 | webm | webp", "mp4")
+  .option("--transparent", "No background, VP9 WebM / animated WebP with alpha preserved")
+  .option("-o, --output <file>", "Output file (default: sprites.<format>)")
   .option("--test", "Generate synthetic test sprites (no --layers needed)")
+  .option("--split <dir>", "Export each layer as separate transparent WebP + generate index.html (use with --test)")
   .action(async (opts: {
     renderer: string; layers?: string; fps: string; duration?: string;
-    width: string; height: string; quality: string; transparent?: boolean;
-    output?: string; test?: boolean;
+    width: string; height: string; quality: string; format: string;
+    transparent?: boolean; output?: string; test?: boolean; split?: string;
   }) => {
     const rendererUrl = opts.renderer.replace(/\/$/, "");
     try {
@@ -468,16 +470,75 @@ program
     }
 
     console.log(`Layers: ${layerDefs.map(l => `${l.name} (${l.frameWidth}×${l.frameHeight} ×${l.rows ?? 1}r)`).join(", ")}`);
+
+    const fps      = parseInt(opts.fps, 10);
+    const canvasW  = parseInt(opts.width, 10);
+    const canvasH  = parseInt(opts.height, 10);
+    const duration = opts.duration ? parseFloat(opts.duration) : undefined;
+
+    // ── --split: each non-background layer as its own transparent animated WebP ──
+    if (opts.split) {
+      const splitDir = resolve(opts.split);
+      mkdirSync(splitDir, { recursive: true });
+
+      // layer 0 is background — skip it; render each shape layer separately
+      const shapeLayers = layerDefs.slice(1);
+      const webpFiles: string[] = [];
+
+      for (let i = 0; i < shapeLayers.length; i++) {
+        const layer = shapeLayers[i];
+        console.log(`  [${i + 1}/${shapeLayers.length}] rendering ${layer.name}...`);
+        const sBody = {
+          layers: [layer], fps, width: canvasW, height: canvasH,
+          ...(duration ? { duration } : {}),
+          quality: opts.quality, format: "webp", transparent: true,
+        };
+        const sRes = await fetch(`${rendererUrl}/render/sprites`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(sBody), signal: AbortSignal.timeout(5 * 60 * 1000),
+        });
+        const sResult = await sRes.json() as { success: boolean; error?: string; outputToken?: string; fileSize?: number; durationMs?: number };
+        if (!sResult.success || !sResult.outputToken) {
+          console.error(`  Layer ${layer.name} failed: ${sResult.error}`); process.exit(1);
+        }
+        const dl = await fetch(`${rendererUrl}/outputs/${sResult.outputToken}`);
+        const layerPath = join(splitDir, layer.name.replace(/\.\w+$/, "") + ".webp");
+        writeFileSync(layerPath, Buffer.from(await dl.arrayBuffer()));
+        console.log(`  Saved: ${layerPath} (${Math.round((sResult.fileSize ?? 0) / 1024)}KB, ${((sResult.durationMs ?? 0) / 1000).toFixed(1)}s)`);
+        webpFiles.push(layerPath);
+      }
+
+      // Generate HTML compositor page
+      const layers = webpFiles.map(f => basename(f));
+      const html = `<!DOCTYPE html>
+<html><head><meta charset="utf-8"><style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:#0f0f1a; display:flex; justify-content:center; align-items:center; min-height:100vh; }
+.stage { position:relative; width:${canvasW}px; height:${canvasH}px; }
+.stage img { position:absolute; top:0; left:0; width:100%; height:100%; }
+</style></head><body>
+  <div class="stage">
+    ${layers.map(f => `<img src="${f}">`).join("\n    ")}
+  </div>
+</body></html>`;
+      const htmlPath = join(splitDir, "index.html");
+      writeFileSync(htmlPath, html);
+      console.log(`HTML: ${htmlPath}`);
+      const { execSync } = await import("node:child_process");
+      execSync(`open -a "Google Chrome" "${htmlPath}"`);
+      return;
+    }
+
+    // ── normal single-composite render ───────────────────────────────────────
     console.log(`Posting to ${rendererUrl}/render/sprites (fps=${opts.fps}, quality=${opts.quality})...`);
 
-    const defaultOutput = opts.transparent ? "sprites.webm" : "sprites.mp4";
+    const fmt = opts.format ?? "mp4";
+    const defaultOutput = "sprites." + fmt;
     const body = {
-      layers: layerDefs,
-      fps: parseInt(opts.fps, 10),
-      ...(opts.duration ? { duration: parseFloat(opts.duration) } : {}),
-      width: parseInt(opts.width, 10),
-      height: parseInt(opts.height, 10),
-      quality: opts.quality,
+      layers: layerDefs, fps,
+      ...(duration ? { duration } : {}),
+      width: canvasW, height: canvasH,
+      quality: opts.quality, format: fmt,
       transparent: opts.transparent ?? false,
     };
 
