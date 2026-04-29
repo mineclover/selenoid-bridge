@@ -90,11 +90,14 @@ function validateStep(step: unknown, index: number): void {
   }
   if (
     s.action === "assert" &&
-    ["visible", "hidden", "text", "value"].includes(s.type as string) &&
+    ["visible", "hidden", "text", "value", "count", "attribute"].includes(s.type as string) &&
     !s.selector &&
     (typeof s.selectorKey !== "string" || !s.selectorKey)
   ) {
     throw new Error(`Step ${index}: assert ${s.type} requires selector or selectorKey`);
+  }
+  if (s.action === "assert" && s.type === "attribute" && !s.attribute) {
+    throw new Error(`Step ${index}: assert attribute requires attribute field`);
   }
   if (s.action === "record") {
     if (s.mode !== "start" && s.mode !== "stop") {

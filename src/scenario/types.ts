@@ -65,9 +65,10 @@ export interface WaitStep {
 
 export interface AssertStep {
   action: "assert";
-  type: "visible" | "hidden" | "text" | "title" | "url" | "value";
+  type: "visible" | "hidden" | "text" | "title" | "url" | "value" | "count" | "attribute";
   selector?: Selector;
   expected?: string;
+  attribute?: string;  // for type: "attribute" — the attribute name to check
 }
 
 export interface RecordStep {

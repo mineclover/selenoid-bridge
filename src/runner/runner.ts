@@ -362,6 +362,25 @@ async function executeAssert(
       }
       break;
     }
+    case "count": {
+      if (!step.expected) throw new Error("assert count requires expected");
+      const selector = resolveSelectorForStep(step, selectors, "assert count");
+      const count = await client.getElementCount(selector);
+      if (String(count) !== step.expected) {
+        throw new Error(`Count mismatch: expected ${step.expected}, got ${count}`);
+      }
+      break;
+    }
+    case "attribute": {
+      if (!step.expected) throw new Error("assert attribute requires expected");
+      if (!step.attribute) throw new Error("assert attribute requires attribute field");
+      const selector = resolveSelectorForStep(step, selectors, "assert attribute");
+      const val = await client.getAttribute(selector, step.attribute);
+      if (val !== step.expected) {
+        throw new Error(`Attribute "${step.attribute}" mismatch: expected "${step.expected}", got "${val}"`);
+      }
+      break;
+    }
   }
 }
 

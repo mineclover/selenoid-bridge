@@ -300,6 +300,21 @@ export class WebDriverClient {
     return (await this.request("GET", `/wd/hub/session/${this.sessionId}/element/${elementId}/property/value`)) as string;
   }
 
+  async getAttribute(selector: Selector, attribute: string): Promise<string | null> {
+    const elementId = await this.findElement(selector);
+    return (await this.request("GET", `/wd/hub/session/${this.sessionId}/element/${elementId}/attribute/${attribute}`)) as string | null;
+  }
+
+  async getElementCount(selector: Selector): Promise<number> {
+    const using = selector.xpath && (!selector.css || selector.strategy === "text" || selector.strategy === "role-name")
+      ? "xpath" : "css selector";
+    const value = using === "xpath" ? selector.xpath : selector.css;
+    const result = await this.request("POST", `/wd/hub/session/${this.sessionId}/elements`, {
+      using, value,
+    }) as Record<string, string>[];
+    return result.length;
+  }
+
   async getTitle(): Promise<string> {
     return (await this.request("GET", `/wd/hub/session/${this.sessionId}/title`)) as string;
   }
@@ -423,7 +438,20 @@ function mapKey(key: string): string {
     End:       "\uE010",
     PageUp:    "\uE00F",
     PageDown:  "\uE00E",
+    F1:        "\uE031",
+    F2:        "\uE032",
+    F3:        "\uE033",
+    F4:        "\uE034",
     F5:        "\uE035",
+    F6:        "\uE036",
+    F7:        "\uE037",
+    F8:        "\uE038",
+    F9:        "\uE039",
+    F10:       "\uE03A",
+    F11:       "\uE03B",
+    F12:       "\uE03C",
+    Space:     "\uE00D",
+    Insert:    "\uE016",
   };
   return keyMap[key] ?? key;
 }

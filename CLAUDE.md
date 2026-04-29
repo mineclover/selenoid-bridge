@@ -140,11 +140,11 @@ All actions support `id`, `name`, `phase`, `capture` meta fields.
 | press (combo) | keys: ["Control","c"] | modifier combo; keys overrides key |
 | wait | ms? / selector? / selectorKey? | |
 | upload | selector or selectorKey, filePath | Selenium remote file protocol |
-| assert | type, selector/selectorKey?, expected? | visible/hidden/text/title/url/value |
+| assert | type, selector/selectorKey?, expected?, attribute? | visible/hidden/text/title/url/value/count/attribute |
 | record | mode: "start"/"stop", id? | CDP screencast |
 | measure | selector or selectorKey, event?, ms? | animationend/transitionend |
 
-**Key names for `press`:** Enter, Tab, Escape, Backspace, Delete, ArrowUp/Down/Left/Right, Control, Shift, Alt, Meta/Command, Home, End, PageUp, PageDown, F5
+**Key names for `press`:** Enter, Tab, Escape, Backspace, Delete, Space, Insert, ArrowUp/Down/Left/Right, Control, Shift, Alt, Meta/Command, Home, End, PageUp, PageDown, F1–F12
 
 **Modifier combo example:**
 `{ "action": "press", "keys": ["Control", "a"] }` — selects all (Ctrl+A)
